@@ -1,0 +1,89 @@
+version: "3.8"
+
+services:
+  # Python backend - ROMA synthesis engine
+  synth-engine:
+    build:
+      context: ./synth-engine
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      - LLM_PROVIDER=${LLM_PROVIDER:-anthropic}
+      - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+      - OPENAI_API_KEY=${OPENAI_API_KEY}
+      - N8N_BASE_URL=${N8N_BASE_URL:-http://n8n:5678/api/v1}
+      - N8N_API_KEY=${N8N_API_KEY}
+      - SUPABASE_URL=${SUPABASE_URL}
+      - SUPABASE_SERVICE_KEY=${SUPABASE_SERVICE_KEY}
+      - AGENT_RUNNER_URL=http://synth-engine:8000
+      - DEBUG=${DEBUG:-false}
+    depends_on:
+      - n8n
+    networks:
+      - roma-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Frontend - React app with Vite
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    ports:
+      - "5173:5173"
+    environment:
+      - VITE_BACKEND_URL=http://localhost:8000
+      - VITE_SUPABASE_URL=${SUPABASE_URL}
+      - VITE_SUPABASE_ANON_KEY=${SUPABASE_ANON_KEY}
+    depends_on:
+      - synth-engine
+    networks:
+      - roma-network
+
+  # n8n - Workflow automation platform
+  n8n:
+    image: n8nio/n8n:latest
+    ports:
+      - "5678:5678"
+    environment:
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER:-admin}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD:-admin}
+      - N8N_HOST=localhost
+      - N8N_PORT=5678
+      - N8N_PROTOCOL=http
+      - WEBHOOK_URL=http://localhost:5678/
+      - GENERIC_TIMEZONE=UTC
+      - N8N_API_DISABLED=false
+    volumes:
+      - n8n_data:/home/node/.n8n
+    networks:
+      - roma-network
+    restart: unless-stopped
+
+  # PostgreSQL for n8n (optional - n8n uses SQLite by default)
+  # Uncomment if you want to use PostgreSQL for n8n
+  # postgres:
+  #   image: postgres:15-alpine
+  #   environment:
+  #     - POSTGRES_USER=n8n
+  #     - POSTGRES_PASSWORD=n8n_password
+  #     - POSTGRES_DB=n8n
+  #   volumes:
+  #     - postgres_data:/var/lib/postgresql/data
+  #   networks:
+  #     - roma-network
+  #   restart: unless-stopped
+
+networks:
+  roma-network:
+    driver: bridge
+
+volumes:
+  n8n_data:
+  # postgres_data:  # Uncomment if using PostgreSQL

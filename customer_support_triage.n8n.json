@@ -1,0 +1,306 @@
+{
+  "name": "Customer support triage: Webhook receives {custome",
+  "nodes": [
+    {
+      "id": "8ee8c456-2b48-465c-8389-e2fa343c1488",
+      "name": "Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "customer-support-triage",
+        "responseMode": "lastNode",
+        "options": {}
+      },
+      "webhookId": "483f602c"
+    },
+    {
+      "id": "1092b185-a0b1-450e-829c-c9aa6af47171",
+      "name": "Classify Intent and Urgency",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        300,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_RUNNER_URL }}/api/agent/run",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  \"agent_name\": \"classify_intent\",\n  \"input\": $json,\n  \"context\": {},\n  \"tools_allowed\": []\n}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "65467bbd-e417-45b3-80e5-874c3888ab90",
+      "name": "Route by Intent Category",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 1,
+      "position": [
+        600,
+        300
+      ],
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "={{ $json.intent }}",
+                  "operation": "equal",
+                  "rightValue": "billing"
+                }
+              }
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "={{ $json.intent }}",
+                  "operation": "equal",
+                  "rightValue": "outage"
+                }
+              }
+            }
+          ]
+        },
+        "mode": "rules"
+      }
+    },
+    {
+      "id": "6fde8324-c448-4ad5-915c-4f5de4c1a5cf",
+      "name": "Handle Billing Issue",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        900,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_RUNNER_URL }}/api/agent/run",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  \"agent_name\": \"handle_billing\",\n  \"input\": $json,\n  \"context\": {},\n  \"tools_allowed\": []\n}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "82fe02fb-64d4-48d2-98b5-a33dac469429",
+      "name": "Handle Outage Report",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1200,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_RUNNER_URL }}/api/agent/run",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  \"agent_name\": \"handle_outage\",\n  \"input\": $json,\n  \"context\": {},\n  \"tools_allowed\": []\n}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "8d8e0635-aa5b-4874-9129-03a5af4a7bac",
+      "name": "Ask Clarifying Question",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        1500,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.AGENT_RUNNER_URL }}/api/agent/run",
+        "authentication": "none",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{\n  \"agent_name\": \"handle_clarification\",\n  \"input\": $json,\n  \"context\": {},\n  \"tools_allowed\": []\n}}",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "ad361b7f-e6d7-472f-8318-af9d6302d504",
+      "name": "Merge All Responses",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 2,
+      "position": [
+        1800,
+        300
+      ],
+      "parameters": {
+        "mode": "multiplex",
+        "mergeByFields": {
+          "values": []
+        }
+      }
+    },
+    {
+      "id": "b65c96ca-e55f-4ba5-bdd1-b104b5e99043",
+      "name": "Send Response to Customer",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1,
+      "position": [
+        2100,
+        300
+      ],
+      "parameters": {
+        "responseBody": "={{ { category: $json.category, responseText: $json.responseText } }}",
+        "options": {},
+        "respondWith": "json"
+      }
+    }
+  ],
+  "connections": {
+    "Trigger": {
+      "main": [
+        [
+          {
+            "node": "Route by Intent Category",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route by Intent Category": {
+      "main": [
+        [
+          {
+            "node": "Handle Billing Issue",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Handle Outage Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Handle Outage Report": {
+      "main": [
+        [
+          {
+            "node": "Classify Intent and Urgency",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Intent and Urgency": {
+      "main": [
+        [
+          {
+            "node": "Ask Clarifying Question",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Ask Clarifying Question": {
+      "main": [
+        [
+          {
+            "node": "Merge All Responses",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Merge All Responses": {
+      "main": [
+        [
+          {
+            "node": "Send Response to Customer",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner"
+  },
+  "staticData": null,
+  "tags": []
+}
