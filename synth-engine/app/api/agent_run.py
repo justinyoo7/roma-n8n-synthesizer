@@ -296,7 +296,7 @@ async def execute_apollo_search_people(params: dict) -> dict:
     logger.info("apollo_search_people_request", body_keys=list(body.keys()), per_page=body["per_page"], require_linkedin=body.get("linkedin_url_exists"))
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             # Use the new API search endpoint (api_search)
             response = await client.post(
                 "https://api.apollo.io/api/v1/mixed_people/api_search",
@@ -400,7 +400,7 @@ async def execute_apollo_enrich_person(params: dict) -> dict:
         body["organization_name"] = params.get("organization_name") or params.get("company")
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.post(
                 "https://api.apollo.io/v1/people/match",
                 json=body,
@@ -451,7 +451,7 @@ async def execute_apollo_enrich_company(params: dict) -> dict:
         return {"error": "Domain is required for company enrichment"}
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(
                 "https://api.apollo.io/v1/organizations/enrich",
                 params={"domain": domain},
@@ -546,7 +546,7 @@ async def execute_phantombuster_fetch_output(params: dict) -> dict:
         return {"error": "Phantom ID is required"}
     
     try:
-        async with httpx.AsyncClient(timeout=30.0) as client:
+        async with httpx.AsyncClient(timeout=60.0) as client:
             response = await client.get(
                 "https://api.phantombuster.com/api/v2/agents/fetch-output",
                 params={"id": phantom_id},
@@ -684,12 +684,26 @@ You can use these tools:
 
 IMPORTANT: Always request contacts with LinkedIn URLs (require_linkedin: true) for outreach workflows.
 
-Output JSON with:
-- action_taken: Which Apollo tool you used
-- filters_applied: What search criteria were used
-- results: The processed results from Apollo
-- contacts_with_linkedin: How many contacts have LinkedIn URLs
-- recommendations: Any sales/outreach recommendations based on the data""",
+STRICT OUTPUT FORMAT (you MUST follow this exactly):
+{
+  "action_taken": "apollo_search_people",
+  "filters_applied": {...},
+  "contacts": [
+    {
+      "name": "Full Name",
+      "title": "Job Title",
+      "company": "Company Name",
+      "email": "email@example.com or null",
+      "linkedin_url": "https://linkedin.com/in/... or null",
+      "location": "City, State"
+    }
+  ],
+  "total_count": 25,
+  "contacts_with_linkedin": 20
+}
+
+CRITICAL: The "contacts" array MUST be at the TOP LEVEL of your output, not nested inside "results".
+Extract contacts from the API results and place them directly in the "contacts" array.""",
 
     "phantombuster_agent": """You are a LinkedIn automation agent with access to Phantombuster.
 
@@ -730,11 +744,25 @@ Apollo search parameters you should determine from the ICP:
 
 CRITICAL: Always set require_linkedin: true to ensure contacts have LinkedIn URLs for outreach.
 
-Output JSON with:
-- search_criteria: The parsed Apollo search parameters
-- contacts: List of matching prospects with name, title, company, linkedin_url
-- icp_match_analysis: How well each contact matches the ICP
-- total_with_linkedin: Count of contacts with LinkedIn URLs""",
+STRICT OUTPUT FORMAT (you MUST follow this exactly):
+{
+  "search_criteria": {...},
+  "contacts": [
+    {
+      "name": "Full Name",
+      "title": "Job Title",
+      "company": "Company Name",
+      "email": "email@example.com or null",
+      "linkedin_url": "https://linkedin.com/in/... or null",
+      "location": "City, State"
+    }
+  ],
+  "total_count": 25,
+  "contacts_with_linkedin": 20
+}
+
+CRITICAL: The "contacts" array MUST be at the TOP LEVEL of your output, not nested.
+Extract contacts from API results and place them directly in the "contacts" array.""",
 
     "full_prospect_pipeline": """You are a comprehensive prospect pipeline agent.
 
@@ -753,14 +781,24 @@ Message Drafting (for each prospect):
 - Include a clear value proposition
 - End with a soft call-to-action
 
-Output JSON with:
-- prospects: Array of prospects, each containing:
-  - name, title, company
-  - linkedin_url or linkedin_search_url (whichever is available)
-  - personalized_message: Short LinkedIn outreach message (REQUIRED for each prospect)
-  - message_personalization_elements: What you personalized in the message
-- pipeline_summary: {found: N, messages_drafted: N}
-- outreach_strategy: Brief notes on the outreach approach""",
+STRICT OUTPUT FORMAT (you MUST follow this exactly):
+{
+  "contacts": [
+    {
+      "name": "Full Name",
+      "title": "Job Title", 
+      "company": "Company Name",
+      "email": "email@example.com or null",
+      "linkedin_url": "https://linkedin.com/in/... or null",
+      "personalized_message": "Your personalized outreach message here"
+    }
+  ],
+  "total_count": 25,
+  "pipeline_summary": {"found": 25, "messages_drafted": 25}
+}
+
+CRITICAL: The "contacts" array MUST be at the TOP LEVEL of your output, not nested.
+Each contact MUST have a "personalized_message" field.""",
 }
 
 
@@ -965,6 +1003,33 @@ Respond with valid JSON only."""
         output = result.content
         if tool_results and isinstance(output, dict):
             output["_api_data"] = tool_results
+        
+        # Normalize output: ensure "contacts" exists at top level for Apollo agents
+        # This handles cases where LLM outputs results.people instead of contacts
+        if isinstance(output, dict) and "apollo" in request.agent_name.lower():
+            if "contacts" not in output:
+                # Try to extract contacts from various possible paths
+                contacts = None
+                if "results" in output and isinstance(output["results"], dict):
+                    if "people" in output["results"]:
+                        contacts = output["results"]["people"]
+                    elif "contacts" in output["results"]:
+                        contacts = output["results"]["contacts"]
+                
+                if contacts:
+                    # Normalize contact format
+                    normalized_contacts = []
+                    for c in contacts:
+                        normalized_contacts.append({
+                            "name": c.get("name") or f"{c.get('first_name', '')} {c.get('last_name', '')}".strip(),
+                            "title": c.get("title", ""),
+                            "company": c.get("company") or c.get("organization_name") or (c.get("organization", {}).get("name") if isinstance(c.get("organization"), dict) else ""),
+                            "email": c.get("email"),
+                            "linkedin_url": c.get("linkedin_url"),
+                            "location": c.get("location") or c.get("city", ""),
+                        })
+                    output["contacts"] = normalized_contacts
+                    logger.info("normalized_contacts", count=len(normalized_contacts))
         
         logger.info(
             "agent_run_success",

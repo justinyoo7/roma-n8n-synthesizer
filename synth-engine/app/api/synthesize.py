@@ -194,6 +194,9 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
             # Extract webhook info from workflow IR if it's a webhook trigger
             webhook_url = None
             webhook_path = None
+            n8n_workflow_id = None
+            n8n_workflow_url = None
+            
             if result.workflow_ir.trigger and result.workflow_ir.trigger.trigger_type.value == "webhook":
                 from app.config import get_settings
                 settings = get_settings()
@@ -202,6 +205,38 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                 if settings.n8n_base_url:
                     base_webhook_url = settings.n8n_base_url.replace("/api/v1", "")
                     webhook_url = f"{base_webhook_url}/webhook/{webhook_path}"
+            
+            # Auto-push to n8n and activate for immediate testing
+            if result.n8n_json:
+                try:
+                    from app.n8n.client import N8NClient
+                    from app.config import get_settings
+                    settings = get_settings()
+                    
+                    client = N8NClient()
+                    push_result = await client.create_workflow(result.n8n_json)
+                    n8n_workflow_id = push_result.get("id")
+                    
+                    if n8n_workflow_id:
+                        # Activate the workflow for immediate use
+                        try:
+                            await client.activate_workflow(n8n_workflow_id)
+                            logger.info("workflow_activated", n8n_workflow_id=n8n_workflow_id)
+                        except Exception as e:
+                            logger.warning("workflow_activation_failed", error=str(e))
+                        
+                        # Build n8n URL
+                        if settings.n8n_base_url:
+                            base_url = settings.n8n_base_url.replace("/api/v1", "")
+                            n8n_workflow_url = f"{base_url}/workflow/{n8n_workflow_id}"
+                        
+                        logger.info(
+                            "workflow_pushed_to_n8n",
+                            n8n_workflow_id=n8n_workflow_id,
+                            webhook_url=webhook_url,
+                        )
+                except Exception as e:
+                    logger.warning("n8n_push_failed", error=str(e))
             
             return SynthesizeResponse(
                 workflow_id=result.workflow_id,
@@ -215,6 +250,8 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                 score_breakdown=result.score_breakdown,
                 webhook_url=webhook_url,
                 webhook_path=webhook_path,
+                n8n_workflow_id=n8n_workflow_id,
+                n8n_workflow_url=n8n_workflow_url,
             )
         
     except Exception as e:

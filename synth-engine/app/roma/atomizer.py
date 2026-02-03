@@ -39,21 +39,22 @@ logger = structlog.get_logger()
 # System prompt for complexity assessment
 COMPLEXITY_PROMPT = """You are a workflow complexity analyzer. Analyze the user's workflow description and determine if it's:
 
-1. ATOMIC: A simple workflow that can be directly mapped to n8n nodes without complex decomposition.
+1. ATOMIC: A workflow that can be directly mapped to n8n nodes (simple or moderately complex).
    Examples:
    - "Send an email when webhook is triggered"
    - "Fetch data from API and save to database"
-   - "Transform incoming data and forward to another service"
-   - "Classify messages using AI" (simple AI workflows are still atomic)
-   - "Analyze sentiment of text" (single AI task = atomic)
-
-2. COMPOSITE: A complex workflow requiring decomposition into subtasks.
-   Examples:
-   - "Customer support triage with branching based on intent"
-   - "Multi-agent process with different handlers for different scenarios"
-   - "Workflow with error handling, retries, and fallback paths"
-   - "Complex multi-step AI pipeline with multiple agents"
+   - "Classify messages using AI"
+   - "Search Apollo, loop through results, enrich each, draft messages" (sequential pipeline)
    - "LinkedIn automation with search, filtering, and messaging"
+
+2. COMPOSITE: A workflow with truly parallel branches or complex error handling.
+   Examples:
+   - "Route to different teams based on language AND handle each differently"
+   - "Multi-agent process with parallel handlers that rejoin later"
+   - "Workflow with complex retry logic and multiple fallback paths"
+
+NOTE: Most multi-step sequential workflows are ATOMIC, not COMPOSITE.
+A loop-process-aggregate pattern is ATOMIC (sequential pipeline).
 
 IMPORTANT FLAGS:
 - Set has_agents to TRUE if the workflow requires ANY AI/ML capability such as:
@@ -151,6 +152,25 @@ COLD EMAIL:
 - "action": Regular API calls using native nodes or HTTP Request
 - "transform": Data transformation using Set node
 - "agent": AI-powered steps (classification, sentiment, generation, personalization)
+- "loop": Use n8n-nodes-base.itemLists to iterate over arrays
+- "aggregate": Use n8n-nodes-base.aggregate to combine results back
+
+=== MULTI-STEP WORKFLOW PATTERNS ===
+For complex workflows with loops:
+
+Pattern: Search → Loop → Process Each → Aggregate → Respond
+
+Example nodes:
+1. Trigger (webhook)
+2. Search (HTTP Request to Apollo/etc)
+3. Loop Over Items (itemLists with operation: "splitOutItems")
+4. Process Each Item (agent or HTTP Request)
+5. Aggregate Results (aggregate with aggregate: "aggregateAllItemData")
+6. Respond to Webhook
+
+The system will auto-configure node parameters, but you can specify:
+- itemLists: {"operation": "splitOutItems", "fieldToSplitOut": "contacts"}
+- aggregate: {"aggregate": "aggregateAllItemData", "destinationFieldName": "results"}
 
 === CRITICAL RULES ===
 1. For ANY AI/ML task, use type: "agent". NEVER call OpenAI/Anthropic APIs directly.
@@ -164,12 +184,16 @@ COLD EMAIL:
    - n8n_type: "n8n-nodes-base.httpRequest"  
    - api_integration: "apollo" or "clay"
 
-4. KEEP WORKFLOWS SIMPLE - For agent workflows:
-   - Trigger → Agent Step → Respond is usually sufficient
-   - Agent output returns as JSON with an "output" field
-   - DO NOT add unnecessary intermediate steps
+4. In Set node parameters, use $json not $('node_id').
 
-5. In Set node parameters, use $json not $('node_id').
+5. For looping patterns:
+   - Use n8n-nodes-base.itemLists with operation: "splitOutItems" to loop
+   - Use n8n-nodes-base.aggregate to collect results back
+   - The system auto-configures these nodes with sensible defaults
+
+6. Multi-step workflows are encouraged when appropriate:
+   - Search → Loop → Enrich Each → Aggregate → Respond
+   - The system handles node configuration automatically
 
 Respond with JSON:
 {

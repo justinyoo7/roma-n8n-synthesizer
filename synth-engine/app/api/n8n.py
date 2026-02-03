@@ -466,3 +466,81 @@ async def activate_workflow(workflow_id: str, request: ActivateRequest) -> Activ
             status_code=500,
             detail=f"Error: {str(e)}"
         )
+
+
+# ============================================================================
+# Workflow Printing Endpoints
+# ============================================================================
+
+class PrintWorkflowRequest(BaseModel):
+    """Request to print a workflow in text format."""
+    workflow_json: dict = Field(..., description="n8n workflow JSON to print")
+    include_params: bool = Field(False, description="Include node parameters")
+    format: str = Field("full", description="Output format: 'full', 'compact', or 'ir'")
+
+
+class PrintWorkflowResponse(BaseModel):
+    """Response with text representation."""
+    text: str
+    format: str
+
+
+@router.post("/n8n/print", response_model=PrintWorkflowResponse)
+async def print_workflow_text(request: PrintWorkflowRequest) -> PrintWorkflowResponse:
+    """
+    Print an n8n workflow in a clean text representation.
+    
+    Formats:
+    - "full": Detailed view with all nodes and connections
+    - "compact": One-line-per-node summary
+    - "ir": WorkflowIR format (if workflow_json is actually a WorkflowIR)
+    """
+    from app.utils.workflow_printer import print_workflow, print_workflow_compact, print_workflow_ir
+    
+    try:
+        if request.format == "compact":
+            text = print_workflow_compact(request.workflow_json)
+        elif request.format == "ir":
+            text = print_workflow_ir(request.workflow_json)
+        else:
+            text = print_workflow(request.workflow_json, include_params=request.include_params)
+        
+        return PrintWorkflowResponse(text=text, format=request.format)
+    
+    except Exception as e:
+        logger.error("print_workflow_error", error=str(e))
+        raise HTTPException(status_code=400, detail=f"Failed to print workflow: {str(e)}")
+
+
+@router.get("/n8n/print/{workflow_id}")
+async def print_workflow_by_id(
+    workflow_id: str,
+    include_params: bool = False,
+    format: str = "full"
+) -> PrintWorkflowResponse:
+    """
+    Fetch a workflow from n8n and print it in text format.
+    
+    Args:
+        workflow_id: n8n workflow ID
+        include_params: Include node parameters (default: False)
+        format: Output format - 'full' or 'compact' (default: 'full')
+    """
+    from app.utils.workflow_printer import print_workflow, print_workflow_compact
+    
+    try:
+        client = N8NClient()
+        workflow = await client.get_workflow(workflow_id)
+        
+        if format == "compact":
+            text = print_workflow_compact(workflow)
+        else:
+            text = print_workflow(workflow, include_params=include_params)
+        
+        return PrintWorkflowResponse(text=text, format=format)
+    
+    except N8NClientError as e:
+        raise HTTPException(status_code=e.status_code or 404, detail=str(e))
+    except Exception as e:
+        logger.error("print_workflow_error", workflow_id=workflow_id, error=str(e))
+        raise HTTPException(status_code=500, detail=str(e))

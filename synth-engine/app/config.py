@@ -40,7 +40,7 @@ class Settings(BaseSettings):
     # This URL must be publicly accessible for n8n Cloud to call it
     # Set this to your deployed agent-runner service URL
     agent_runner_url: str = ""
-    agent_runner_timeout: int = 30
+    agent_runner_timeout: int = 120  # 2 minutes for complex agent operations
     agent_runner_max_tokens: int = 4096
     
     # Synthesis Configuration

@@ -109,6 +109,10 @@ class N8NCompiler:
         node_type = step.n8n_node_type
         type_version = step.n8n_type_version
         
+        # Force specific versions for certain node types
+        if step.n8n_node_type == "n8n-nodes-base.itemLists":
+            type_version = 3  # Use v3 for better split functionality
+        
         # Handle agent steps - compile to HTTP Request to agent-runner
         if step.type == StepType.AGENT and step.agent:
             parameters = self._build_agent_parameters(step)
@@ -119,6 +123,33 @@ class N8NCompiler:
                 step_name=step.name,
                 agent_name=step.agent.name,
             )
+        
+        # Convert direct API calls (Apollo, Perplexity, etc.) to agent-runner
+        # This is more reliable than trying to inject API keys into HTTP nodes
+        elif step.n8n_node_type == "n8n-nodes-base.httpRequest":
+            url = str(parameters.get("url", ""))
+            step_name_lower = step.name.lower()
+            
+            # Detect Apollo API calls
+            if "api.apollo.io" in url or "apollo" in step_name_lower:
+                parameters = self._build_api_agent_parameters(step, "apollo_agent", "Search and enrich leads using Apollo.io")
+                node_type = "n8n-nodes-base.httpRequest"
+                type_version = 4
+                logger.info("converting_apollo_to_agent", step_name=step.name)
+            
+            # Detect Perplexity API calls
+            elif "api.perplexity.ai" in url or "perplexity" in step_name_lower or "research" in step_name_lower:
+                parameters = self._build_api_agent_parameters(step, "research_agent", "Research using Perplexity AI")
+                node_type = "n8n-nodes-base.httpRequest"
+                type_version = 4
+                logger.info("converting_perplexity_to_agent", step_name=step.name)
+            
+            # Detect Phantombuster API calls
+            elif "api.phantombuster.com" in url or "phantombuster" in step_name_lower or "linkedin" in step_name_lower:
+                parameters = self._build_api_agent_parameters(step, "phantombuster_agent", "LinkedIn automation via Phantombuster")
+                node_type = "n8n-nodes-base.httpRequest"
+                type_version = 4
+                logger.info("converting_phantombuster_to_agent", step_name=step.name)
         
         node = {
             "id": n8n_id,
@@ -177,6 +208,38 @@ class N8NCompiler:
         elif step.n8n_node_type == "n8n-nodes-base.set":
             # Fix Set node parameters to use correct v1 format
             params = self._fix_set_node_params(params)
+        
+        elif step.n8n_node_type == "n8n-nodes-base.itemLists":
+            # Item Lists node v3 - for splitting/aggregating arrays
+            # Default to "Split Out Items" operation which loops over array items
+            params.setdefault("operation", "splitOutItems")
+            # FORCE correct field path - Apollo/ICP agents return contacts at output.contacts
+            # (strict format enforced in agent prompts)
+            params["fieldToSplitOut"] = "output.contacts"
+            # Include any input items in output (required for proper data flow)
+            params.setdefault("include", "noOtherFields")
+            params.setdefault("options", {})
+        
+        elif step.n8n_node_type == "n8n-nodes-base.aggregate":
+            # Aggregate node - combines items back into array
+            params.setdefault("aggregate", "aggregateAllItemData")
+            params.setdefault("destinationFieldName", "results")
+            params.setdefault("options", {})
+        
+        elif step.n8n_node_type == "n8n-nodes-base.splitInBatches":
+            # Split In Batches - process items in groups
+            params.setdefault("batchSize", 10)
+            params.setdefault("options", {})
+        
+        elif step.n8n_node_type == "n8n-nodes-base.merge":
+            # Merge node - combine data from multiple branches
+            params.setdefault("mode", "combine")
+            params.setdefault("combinationMode", "mergeByPosition")
+            params.setdefault("options", {})
+        
+        elif step.n8n_node_type == "n8n-nodes-base.noOp":
+            # No Operation - pass through
+            params = {}
         
         return params
     
@@ -308,7 +371,43 @@ class N8NCompiler:
             "body": json_body,
             "contentType": "raw",
             "rawContentType": "application/json",
-            "options": {},
+            "options": {
+                "timeout": 120000,  # 2 minutes timeout for agent operations
+            },
+        }
+    
+    def _build_api_agent_parameters(self, step: StepSpec, agent_name: str, task_description: str) -> dict:
+        """Build HTTP Request parameters to route API calls through agent-runner.
+        
+        This converts direct API calls (Apollo, Perplexity, etc.) to agent-runner calls.
+        The agent-runner has the API keys and proper integration code.
+        """
+        settings = get_settings()
+        agent_runner_url = settings.agent_runner_url or "https://YOUR_AGENT_RUNNER_URL"
+        
+        task_description_escaped = task_description.replace('"', '\\"')
+        
+        # Pass the previous node's data as input to the agent
+        # The agent will process this and make the appropriate API calls
+        json_body = f"""={{{{ JSON.stringify({{
+  "agent_name": "{agent_name}",
+  "input": Object.assign({{}}, $json, {{ task: "{task_description_escaped}" }}),
+  "context": {{}},
+  "tools_allowed": []
+}}) }}}}"""
+        
+        return {
+            "method": "POST",
+            "url": f"{agent_runner_url}/api/agent/run",
+            "authentication": "none",
+            "sendBody": True,
+            "specifyBody": "string",
+            "body": json_body,
+            "contentType": "raw",
+            "rawContentType": "application/json",
+            "options": {
+                "timeout": 120000,
+            },
         }
     
     def _convert_direct_ai_calls(self, node: dict) -> dict:
@@ -378,7 +477,9 @@ class N8NCompiler:
             "body": json_body,
             "contentType": "raw",
             "rawContentType": "application/json",
-            "options": {},
+            "options": {
+                "timeout": 120000,  # 2 minutes timeout for agent operations
+            },
         }
         
         # Return converted node
