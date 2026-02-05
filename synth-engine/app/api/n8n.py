@@ -148,6 +148,139 @@ async def push_to_n8n(request: PushToN8NRequest) -> PushToN8NResponse:
         )
 
 
+class UpdateWorkflowRequest(BaseModel):
+    """Request to update an existing workflow in n8n."""
+    
+    workflow_json: dict = Field(..., description="The updated n8n workflow JSON")
+    workflow_name: Optional[str] = Field(None, description="Override the workflow name")
+
+
+class UpdateWorkflowResponse(BaseModel):
+    """Response from updating a workflow."""
+    
+    success: bool
+    n8n_workflow_id: str
+    n8n_workflow_url: str
+    message: str
+
+
+@router.put("/n8n/workflows/{workflow_id}", response_model=UpdateWorkflowResponse)
+async def update_workflow(workflow_id: str, request: UpdateWorkflowRequest) -> UpdateWorkflowResponse:
+    """
+    Update an existing workflow in n8n.
+    
+    This endpoint updates the workflow instead of creating a new one.
+    Use this when you've edited a workflow and want to sync changes to n8n.
+    """
+    settings = get_settings()
+    
+    if not settings.n8n_api_key:
+        raise HTTPException(
+            status_code=400,
+            detail="n8n API key not configured. Set N8N_API_KEY in environment."
+        )
+    
+    try:
+        client = N8NClient()
+        
+        # Override name if provided
+        workflow_json = request.workflow_json.copy()
+        if request.workflow_name:
+            workflow_json["name"] = request.workflow_name
+        
+        # Ensure the workflow has the correct ID
+        workflow_json["id"] = workflow_id
+        
+        # Update the workflow
+        result = await client.update_workflow(workflow_id, workflow_json)
+        
+        updated_workflow_id = result.get("id")
+        logger.info("workflow_updated_in_n8n", n8n_workflow_id=updated_workflow_id)
+        
+        # Build the workflow URL
+        base_url = settings.n8n_base_url.replace("/api/v1", "")
+        workflow_url = f"{base_url}/workflow/{updated_workflow_id}"
+        
+        return UpdateWorkflowResponse(
+            success=True,
+            n8n_workflow_id=updated_workflow_id,
+            n8n_workflow_url=workflow_url,
+            message=f"Workflow updated successfully in n8n"
+        )
+        
+    except N8NClientError as e:
+        error_detail = str(e)
+        if e.response_body:
+            error_detail = f"{e}: {e.response_body}"
+        logger.error("n8n_update_error", workflow_id=workflow_id, error=str(e), status_code=e.status_code, response_body=e.response_body)
+        raise HTTPException(
+            status_code=e.status_code or 500,
+            detail=f"Failed to update workflow in n8n: {error_detail}"
+        )
+    except Exception as e:
+        logger.error("n8n_update_error", workflow_id=workflow_id, error=str(e))
+        raise HTTPException(
+            status_code=500,
+            detail=f"Error updating workflow in n8n: {str(e)}"
+        )
+
+
+# ============================================================================
+# WorkflowIR to n8n Compilation Endpoint
+# ============================================================================
+
+class CompileIRRequest(BaseModel):
+    """Request to compile WorkflowIR to n8n JSON."""
+    
+    workflow_ir: dict = Field(..., description="The WorkflowIR object to compile")
+    route_apis_through_perseus: bool = Field(True, description="Whether to route API calls through Perseus backend")
+
+
+class CompileIRResponse(BaseModel):
+    """Response from compiling WorkflowIR."""
+    
+    success: bool
+    workflow_json: Optional[dict] = None
+    message: str
+
+
+@router.post("/n8n/compile", response_model=CompileIRResponse)
+async def compile_workflow_ir(request: CompileIRRequest) -> CompileIRResponse:
+    """
+    Compile a WorkflowIR to n8n workflow JSON.
+    
+    This endpoint takes a WorkflowIR (the internal workflow representation)
+    and compiles it to n8n-compatible JSON that can be pushed to n8n.
+    
+    Use this when you've edited a workflow and need to generate updated n8n JSON.
+    """
+    from app.n8n.compiler import N8NCompiler
+    from app.models.workflow_ir import WorkflowIR
+    
+    try:
+        # Parse the WorkflowIR from the dict
+        workflow_ir = WorkflowIR.model_validate(request.workflow_ir)
+        
+        # Create compiler and compile
+        compiler = N8NCompiler(route_apis_through_perseus=request.route_apis_through_perseus)
+        n8n_json = compiler.compile(workflow_ir)
+        
+        logger.info("workflow_ir_compiled", workflow_name=workflow_ir.name)
+        
+        return CompileIRResponse(
+            success=True,
+            workflow_json=n8n_json,
+            message="WorkflowIR compiled to n8n format successfully"
+        )
+        
+    except Exception as e:
+        logger.error("compile_ir_error", error=str(e))
+        raise HTTPException(
+            status_code=400,
+            detail=f"Failed to compile WorkflowIR: {str(e)}"
+        )
+
+
 class WebhookProxyRequest(BaseModel):
     """Request to proxy a webhook call through the backend (avoids CORS)."""
     
