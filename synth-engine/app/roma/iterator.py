@@ -92,6 +92,7 @@ class Iterator:
         workflow_ir: WorkflowIR,
         test_results: list[TestResult],
         n8n_errors: list[str],
+        workflow_id: Optional[UUID] = None,
     ) -> dict:
         """Analyze test failures and n8n errors to identify root causes.
         
@@ -99,6 +100,7 @@ class Iterator:
             workflow_ir: The workflow that failed
             test_results: List of test results (including failures)
             n8n_errors: Any errors from n8n execution
+            workflow_id: Optional workflow ID for tracking
             
         Returns:
             Analysis dict with root causes and suggested fix types
@@ -167,6 +169,7 @@ Analyze these failures and identify root causes."""
                 user_message=prompt,
                 node_name="Iterator - Failure Analysis",
                 response_format="json",
+                workflow_id=workflow_id,
             )
             
             # LLMResponse.content is already parsed for JSON format
@@ -233,12 +236,14 @@ Analyze these failures and identify root causes."""
         self,
         workflow_ir: WorkflowIR,
         analysis: dict,
+        workflow_id: Optional[UUID] = None,
     ) -> list[dict]:
         """Generate specific fixes based on failure analysis.
         
         Args:
             workflow_ir: The workflow to fix
             analysis: Analysis from analyze_failures()
+            workflow_id: Optional workflow ID for tracking
             
         Returns:
             List of fix operations to apply
@@ -278,6 +283,7 @@ Analyze these failures and identify root causes."""
                 user_message=prompt,
                 node_name="Iterator - Fix Generation",
                 response_format="json",
+                workflow_id=workflow_id,
             )
             
             # LLMResponse.content is already parsed for JSON format
@@ -495,6 +501,7 @@ Analyze these failures and identify root causes."""
         test_results: list[TestResult],
         n8n_errors: list[str],
         iteration_number: int,
+        workflow_id: Optional[UUID] = None,
     ) -> tuple[WorkflowIR, dict]:
         """Perform one iteration cycle: analyze -> generate fixes -> apply.
         
@@ -503,6 +510,7 @@ Analyze these failures and identify root causes."""
             test_results: Test results from last run
             n8n_errors: n8n errors from last run
             iteration_number: Current iteration count
+            workflow_id: Optional workflow ID for tracking
             
         Returns:
             Tuple of (modified WorkflowIR, iteration metadata)
@@ -515,10 +523,10 @@ Analyze these failures and identify root causes."""
         )
         
         # Step 1: Analyze failures
-        analysis = await self.analyze_failures(workflow_ir, test_results, n8n_errors)
+        analysis = await self.analyze_failures(workflow_ir, test_results, n8n_errors, workflow_id=workflow_id)
         
         # Step 2: Generate fixes
-        fixes = await self.generate_fixes(workflow_ir, analysis)
+        fixes = await self.generate_fixes(workflow_ir, analysis, workflow_id=workflow_id)
         
         # Step 3: Apply fixes
         modified_ir = self.apply_fixes(workflow_ir, fixes)

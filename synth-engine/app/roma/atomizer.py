@@ -8,6 +8,7 @@ For atomic requests, it produces a draft WorkflowIR directly.
 For complex requests, it creates the root of a TaskTree for the Planner.
 """
 from typing import Optional
+from uuid import UUID
 
 import structlog
 
@@ -253,8 +254,12 @@ class Atomizer:
     def __init__(self):
         self.llm = get_llm_adapter()
     
-    async def analyze(self, prompt: str) -> tuple[bool, dict]:
+    async def analyze(self, prompt: str, workflow_id: Optional[UUID] = None) -> tuple[bool, dict]:
         """Analyze the prompt and determine complexity.
+        
+        Args:
+            prompt: Natural language workflow description
+            workflow_id: Optional workflow ID for tracking
         
         Returns:
             Tuple of (is_atomic, analysis_result)
@@ -267,6 +272,7 @@ class Atomizer:
             node_name="Atomizer - Complexity Analysis",
             response_format="json",
             temperature=0.3,  # Lower temperature for more consistent analysis
+            workflow_id=workflow_id,
         )
         
         analysis = response.content
@@ -284,8 +290,13 @@ class Atomizer:
         
         return is_atomic, analysis
     
-    async def generate_atomic_workflow(self, prompt: str) -> WorkflowIR:
-        """Generate a WorkflowIR directly for simple requests."""
+    async def generate_atomic_workflow(self, prompt: str, workflow_id: Optional[UUID] = None) -> WorkflowIR:
+        """Generate a WorkflowIR directly for simple requests.
+        
+        Args:
+            prompt: Natural language workflow description
+            workflow_id: Optional workflow ID for tracking
+        """
         
         logger.info("atomizer_generate_atomic")
         
@@ -295,6 +306,7 @@ class Atomizer:
             node_name="Atomizer - Workflow Generation",
             response_format="json",
             temperature=0.5,
+            workflow_id=workflow_id,
         )
         
         workflow_data = response.content

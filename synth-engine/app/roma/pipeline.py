@@ -78,12 +78,12 @@ class ROMAPipeline:
         iteration_version = 1
         
         # Step 1: Atomizer - Analyze complexity
-        is_atomic, analysis = await self.atomizer.analyze(prompt)
+        is_atomic, analysis = await self.atomizer.analyze(prompt, workflow_id=workflow_id)
         
         if is_atomic:
             # Direct synthesis for simple workflows
             logger.info("atomic_synthesis")
-            workflow_ir = await self.atomizer.generate_atomic_workflow(prompt)
+            workflow_ir = await self.atomizer.generate_atomic_workflow(prompt, workflow_id=workflow_id)
             task_tree = None
         else:
             # Decomposition for complex workflows
@@ -99,6 +99,7 @@ class ROMAPipeline:
             context = {
                 "prompt": prompt,
                 "analysis": analysis,
+                "workflow_id": workflow_id,
             }
             
             # Execute tasks in dependency order

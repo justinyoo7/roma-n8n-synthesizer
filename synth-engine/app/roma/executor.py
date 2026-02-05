@@ -202,6 +202,7 @@ NODE SELECTION GUIDANCE:
         """Choose and configure the workflow trigger."""
         
         prompt = context.get("prompt", "")
+        workflow_id = context.get("workflow_id")
         
         response = await generate_with_logging(
             system_prompt="""You are selecting a trigger for an n8n workflow.
@@ -229,6 +230,7 @@ Respond with JSON:
             user_message=f"Choose a trigger for: {prompt}",
             node_name="Executor - Choose Trigger",
             response_format="json",
+            workflow_id=workflow_id,
         )
         
         return [Artifact(
@@ -244,6 +246,7 @@ Respond with JSON:
         """Define AI agents needed in the workflow."""
         
         prompt = context.get("prompt", "")
+        workflow_id = context.get("workflow_id")
         
         response = await generate_with_logging(
             system_prompt="""You are defining AI agents for a workflow.
@@ -281,6 +284,7 @@ Respond with JSON:
             user_message=f"Define agents for: {prompt}",
             node_name="Executor - Define Agents",
             response_format="json",
+            workflow_id=workflow_id,
         )
         
         return [Artifact(
@@ -297,6 +301,7 @@ Respond with JSON:
         
         prompt = context.get("prompt", "")
         agents = context.get("agents", [])
+        workflow_id = context.get("workflow_id")
         
         response = await generate_with_logging(
             system_prompt="""You are defining data contracts for workflow edges.
@@ -329,6 +334,7 @@ Respond with JSON:
 Agents defined: {agents}""",
             node_name="Executor - Define Data Contracts",
             response_format="json",
+            workflow_id=workflow_id,
         )
         
         return [Artifact(
@@ -348,6 +354,7 @@ Agents defined: {agents}""",
         
         prompt = context.get("prompt", "")
         agents = context.get("agents", [])
+        workflow_id = context.get("workflow_id")
         
         # Pre-resolve some common intents from the prompt to provide guidance
         pre_resolved = {}
@@ -441,6 +448,7 @@ Remember:
 - Use native nodes when available (HubSpot, Slack, Gmail, Clearbit, etc.)""",
             node_name="Executor - Select n8n Nodes",
             response_format="json",
+            workflow_id=workflow_id,
         )
         
         return [Artifact(
@@ -456,6 +464,7 @@ Remember:
         """Define error handling strategy."""
         
         prompt = context.get("prompt", "")
+        workflow_id = context.get("workflow_id")
         
         response = await generate_with_logging(
             system_prompt="""You are defining error handling for a workflow.
@@ -497,6 +506,7 @@ Respond with JSON:
             user_message=f"Define error handling for: {prompt}",
             node_name="Executor - Error Handling",
             response_format="json",
+            workflow_id=workflow_id,
         )
         
         return [Artifact(
@@ -514,6 +524,7 @@ Respond with JSON:
         prompt = context.get("prompt", "")
         agents = context.get("agents", [])
         contracts = context.get("contracts", [])
+        workflow_id = context.get("workflow_id")
         
         response = await generate_with_logging(
             system_prompt="""You are generating test cases for an n8n workflow.
@@ -559,6 +570,7 @@ Agents: {agents}
 Data contracts: {contracts}""",
             node_name="Executor - Generate Tests",
             response_format="json",
+            workflow_id=workflow_id,
         )
         
         return [Artifact(
