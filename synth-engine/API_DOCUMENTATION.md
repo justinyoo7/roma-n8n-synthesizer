@@ -6,6 +6,8 @@
 
 **Content-Type:** All requests use `application/json`
 
+**n8n Cloud Instance:** `https://perseustech.app.n8n.cloud`
+
 ---
 
 ## Table of Contents
@@ -19,11 +21,13 @@
    - Push Workflow
    - Get Executions
    - Activate/Deactivate
-   - **Print Workflow (NEW)**
+   - Print Workflow
 7. [Webhook Proxy](#7-webhook-proxy)
 8. [Data Types & Schemas](#8-data-types--schemas)
 9. [Error Handling](#9-error-handling)
 10. [Integration Examples](#10-integration-examples)
+11. [Tested Workflow Examples](#11-tested-workflow-examples)
+12. [Known Issues & Limitations](#12-known-issues--limitations)
 
 ---
 
@@ -103,7 +107,7 @@ interface SynthesizeResponse {
 
 **Example Request:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/synthesize" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/synthesize" \
   -H "Content-Type: application/json" \
   -d '{
     "prompt": "Create a webhook that analyzes sentiment of incoming text",
@@ -163,15 +167,23 @@ interface AgentRunRequest {
 
 **Available Agents:**
 
-| Agent Name | Purpose | Input Fields |
-|------------|---------|--------------|
-| `apollo_agent` | Search Apollo.io for leads | `task`, `icp_description`, `titles`, `seniorities` |
-| `research_agent` | Perplexity AI research | `query`, `topic`, `focus` |
-| `full_prospect_pipeline` | Complete prospecting | `icp_description` |
-| `icp_prospect_searcher` | ICP-based search | `icp_description`, `search_criteria` |
-| `message_drafter` | Draft personalized messages | `prospect`, `task` |
-| `sentiment_analyzer` | Analyze text sentiment | `text`, `task` |
-| `phantombuster_agent` | LinkedIn automation | `phantom_id`, `arguments` |
+| Agent Name | Purpose | Input Fields | API Calls Made |
+|------------|---------|--------------|----------------|
+| `apollo_agent` | Search Apollo.io for leads | `task`, `icp_description`, `titles`, `seniorities` | Apollo People Search |
+| `perplexity_agent` | Perplexity AI research | `query`, `topic`, `focus` | Perplexity Search |
+| `research_agent` | General AI research | `query`, `topic`, `task` | Perplexity Search |
+| `full_prospect_pipeline` | Complete prospecting | `icp_description` | Apollo + Analysis |
+| `icp_prospect_searcher` | ICP-based search | `icp_description`, `search_criteria` | Apollo People Search |
+| `message_drafter` | Draft personalized messages | `prospect`, `task` | None (LLM only) |
+| `sentiment_analyzer` | Analyze text sentiment | `text`, `task` | None (LLM only) |
+| `phantombuster_agent` | LinkedIn automation | `phantom_id`, `arguments` | Phantombuster API |
+| `company_researcher` | Research company info | `company`, `task` | Perplexity Search |
+| `executive_researcher` | Research individual exec | `name`, `title`, `company` | Perplexity Search |
+| `email_writer` | Draft cold emails | `prospect`, `research`, `task` | None (LLM only) |
+| `content_researcher` | Content research | `topic`, `url` | Perplexity Search |
+| `twitter_thread_creator` | Create Twitter threads | `content`, `insights` | None (LLM only) |
+| `linkedin_content_creator` | Create LinkedIn posts | `content`, `insights` | None (LLM only) |
+| `action_generator` | Generate follow-up actions | `lead`, `score`, `route` | None (LLM only) |
 
 **Response:**
 ```typescript
@@ -189,7 +201,7 @@ interface AgentRunResponse {
 
 **Example - Apollo Search:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/agent/run" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/agent/run" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_name": "apollo_agent",
@@ -213,21 +225,17 @@ curl -X POST "http://127.0.0.1:8000/api/agent/run" \
       "q_keywords": "SaaS",
       "require_linkedin": true
     },
-    "results": {
-      "people": [
-        {
-          "name": "Sarah Johnson",
-          "title": "CEO & Co-Founder",
-          "email": "sarah@techflow.com",
-          "linkedin_url": "https://linkedin.com/in/sarah-johnson",
-          "organization": {
-            "name": "TechFlow Solutions",
-            "industry": "Software Development"
-          }
-        }
-      ],
-      "total_results": 847
-    },
+    "contacts": [
+      {
+        "name": "Sarah Johnson",
+        "title": "CEO & Co-Founder",
+        "email": "sarah@techflow.com",
+        "linkedin_url": "https://linkedin.com/in/sarah-johnson",
+        "company": "TechFlow Solutions",
+        "location": "San Francisco, CA"
+      }
+    ],
+    "total_count": 847,
     "contacts_with_linkedin": 25,
     "_api_data": {
       "apollo_people_search": {
@@ -246,15 +254,15 @@ curl -X POST "http://127.0.0.1:8000/api/agent/run" \
 }
 ```
 
-**Example - Research Agent:**
+**Example - Perplexity Research:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/agent/run" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/agent/run" \
   -H "Content-Type: application/json" \
   -d '{
-    "agent_name": "research_agent",
+    "agent_name": "perplexity_agent",
     "input": {
-      "query": "Latest AI automation trends in sales",
-      "task": "Research current trends"
+      "query": "Latest AI automation trends in enterprise sales 2026",
+      "task": "Research current trends and key players"
     },
     "context": {},
     "tools_allowed": []
@@ -263,12 +271,12 @@ curl -X POST "http://127.0.0.1:8000/api/agent/run" \
 
 **Example - Full Prospect Pipeline:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/agent/run" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/agent/run" \
   -H "Content-Type: application/json" \
   -d '{
     "agent_name": "full_prospect_pipeline",
     "input": {
-      "icp_description": "Enterprise CTOs at Fortune 500 companies"
+      "icp_description": "Enterprise CTOs at Fortune 500 companies in the fintech sector"
     },
     "context": {},
     "tools_allowed": []
@@ -281,7 +289,7 @@ curl -X POST "http://127.0.0.1:8000/api/agent/run" \
 
 ### `POST /api/tests/run`
 
-Run tests against a workflow. Tests can execute via real n8n webhooks or simulated locally.
+Run tests against a workflow. Tests execute via real n8n webhooks.
 
 **Request Body:**
 ```typescript
@@ -322,7 +330,7 @@ interface TestResult {
 
 **Example:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/tests/run" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/tests/run" \
   -H "Content-Type: application/json" \
   -d '{
     "workflow_ir": {...},
@@ -368,7 +376,7 @@ interface Fix {
 
 **Example:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/iterate" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/iterate" \
   -H "Content-Type: application/json" \
   -d '{
     "workflow_ir": {...},
@@ -500,7 +508,7 @@ Print a workflow in a clean, human-readable text format.
 interface PrintWorkflowRequest {
   workflow_json: object;       // n8n workflow JSON to print
   include_params?: boolean;    // Include node parameters (default: false)
-  format?: "full" | "compact" | "ir";  // Output format (default: "full")
+  format?: "full" | "compact"; // Output format (default: "full")
 }
 ```
 
@@ -515,11 +523,10 @@ interface PrintWorkflowResponse {
 **Formats:**
 - `full`: Detailed view with all nodes, connections, and optional parameters
 - `compact`: One-line summary showing node flow
-- `ir`: WorkflowIR format (use when passing a WorkflowIR instead of n8n JSON)
 
 **Example:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/n8n/print" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/n8n/print" \
   -H "Content-Type: application/json" \
   -d '{
     "workflow_json": {...},
@@ -600,13 +607,13 @@ interface PrintWorkflowResponse {
 **Example:**
 ```bash
 # Full view
-curl "http://127.0.0.1:8000/api/n8n/print/WrKMNdAjCpnI2HnL"
+curl "https://perseus-tech-production.up.railway.app/api/n8n/print/WrKMNdAjCpnI2HnL"
 
 # Compact view
-curl "http://127.0.0.1:8000/api/n8n/print/WrKMNdAjCpnI2HnL?format=compact"
+curl "https://perseus-tech-production.up.railway.app/api/n8n/print/WrKMNdAjCpnI2HnL?format=compact"
 
 # With parameters
-curl "http://127.0.0.1:8000/api/n8n/print/WrKMNdAjCpnI2HnL?include_params=true"
+curl "https://perseus-tech-production.up.railway.app/api/n8n/print/WrKMNdAjCpnI2HnL?include_params=true"
 ```
 
 **Node Icons Legend:**
@@ -655,11 +662,11 @@ interface WebhookProxyResponse {
 
 **Example:**
 ```bash
-curl -X POST "http://127.0.0.1:8000/api/webhook/proxy" \
+curl -X POST "https://perseus-tech-production.up.railway.app/api/webhook/proxy" \
   -H "Content-Type: application/json" \
   -d '{
-    "webhook_url": "https://perseustech.app.n8n.cloud/webhook/my-workflow",
-    "payload": {"message": "Hello"},
+    "webhook_url": "https://perseustech.app.n8n.cloud/webhook/lead-qualification",
+    "payload": {"message": "Find VP-level executives at fintech startups"},
     "method": "POST"
   }'
 ```
@@ -803,7 +810,7 @@ interface ErrorResponse {
 
 ```typescript
 // api.ts
-const API_BASE = process.env.REACT_APP_API_URL || 'http://127.0.0.1:8000';
+const API_BASE = process.env.REACT_APP_API_URL || 'https://perseus-tech-production.up.railway.app';
 
 export const api = {
   async synthesize(prompt: string, autoIterate = false) {
@@ -873,6 +880,14 @@ export const api = {
     if (!response.ok) throw new Error(`HTTP ${response.status}`);
     return response.json();
   },
+
+  async printWorkflow(workflowId: string, format = 'full') {
+    const response = await fetch(
+      `${API_BASE}/api/n8n/print/${workflowId}?format=${format}`
+    );
+    if (!response.ok) throw new Error(`HTTP ${response.status}`);
+    return response.json();
+  },
 };
 ```
 
@@ -936,26 +951,213 @@ function WorkflowBuilder() {
 
 ---
 
-## Appendix: Working Webhook Examples
+## 11. Tested Workflow Examples
 
-These webhooks are deployed and ready to test:
+These workflows have been tested and verified on Railway (February 2026):
+
+### 1. Lead Qualification Pipeline ✅
+
+**Webhook:** `https://perseustech.app.n8n.cloud/webhook/lead-qualification`
+**n8n ID:** `ivIuTXqftiO5lmeN`
+**Steps:** 9 (Search → Split → Research → Qualify → Check → Draft → Format → Aggregate → Respond)
+**Status:** SUCCESS - 901KB response
 
 ```bash
-# Multi-step Apollo → Research → Draft Messages
-curl -X POST "https://perseustech.app.n8n.cloud/webhook/apollo-research" \
+curl -X POST "https://perseustech.app.n8n.cloud/webhook/lead-qualification" \
   -H "Content-Type: application/json" \
-  -d '{"icp_description": "B2B SaaS founders"}'
-
-# Simple prospect pipeline
-curl -X POST "https://perseustech.app.n8n.cloud/webhook/prospect-outreach" \
-  -H "Content-Type: application/json" \
-  -d '{"icp_description": "Tech startup CEOs"}'
-
-# Sentiment analysis
-curl -X POST "https://perseustech.app.n8n.cloud/webhook/sentiment-analysis" \
-  -H "Content-Type: application/json" \
-  -d '{"text": "This product is amazing!"}'
+  -d '{"message": "Find VP-level executives at fintech startups"}'
 ```
+
+**Sample Response:**
+```json
+{
+  "qualified_leads": [
+    {
+      "output": {
+        "personalized_emails": [
+          {
+            "prospect": {
+              "name": "Hakan",
+              "title": "Deputy Chief Executive Officer (CTO)",
+              "company": "Odeon Software & Technology"
+            },
+            "email": {
+              "subject": "Technology Modernization Strategy for Odeon Software & Technology",
+              "body": "Dear Hakan,\n\nAs Deputy CEO and CTO at Odeon Software...",
+              "personalization_notes": [
+                "Addresses dual CEO/CTO role and decision-making authority",
+                "Focuses on technology modernization challenges"
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
+```
+
+---
+
+### 2. Content Repurposing Pipeline ✅
+
+**Webhook:** `https://perseustech.app.n8n.cloud/webhook/content-repurpose`
+**n8n ID:** `YzMnFJ3JTGct13GZ`
+**Steps:** 6 (Research → Twitter → LinkedIn → Newsletter → Format → Respond)
+**Status:** SUCCESS - 3KB response
+
+```bash
+curl -X POST "https://perseustech.app.n8n.cloud/webhook/content-repurpose" \
+  -H "Content-Type: application/json" \
+  -d '{"topic": "AI agents in enterprise workflows - how companies are automating complex business processes with LLMs"}'
+```
+
+**Sample Response:**
+```json
+{
+  "twitter_thread": {
+    "hook_tweet": "🤖 AI agents are quietly revolutionizing enterprise workflows...",
+    "thread_tweets": [
+      "1/ Traditional RPA tools follow rigid scripts. AI agents powered by LLMs? They reason through exceptions...",
+      "2/ The magic happens through \"observe-plan-act\" cycles...",
+      "..."
+    ],
+    "engagement_elements": {
+      "hashtags": ["#AIAgents", "#WorkflowAutomation", "#EnterpriseAI"],
+      "call_to_action": "What workflows in your organization could benefit from intelligent agents?"
+    },
+    "thread_metrics": {
+      "total_tweets": 10,
+      "estimated_read_time": "2-3 minutes"
+    }
+  }
+}
+```
+
+---
+
+### 3. Lead Scoring & Routing ✅
+
+**Webhook:** `https://perseustech.app.n8n.cloud/webhook/lead-scoring`
+**n8n ID:** `oVC0kCIw6AYDafGH`
+**Steps:** 6 (Enrich → Research → Score → Actions → Format → Respond)
+**Status:** SUCCESS - 2.4KB response
+
+```bash
+curl -X POST "https://perseustech.app.n8n.cloud/webhook/lead-scoring" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "Sarah Chen",
+    "email": "sarah.chen@techcorp.com",
+    "company": "TechCorp AI",
+    "job_title": "VP of Engineering"
+  }'
+```
+
+**Sample Response:**
+```json
+{
+  "follow_up_actions": [
+    {
+      "action_type": "research_enhancement",
+      "priority": "high",
+      "tasks": [
+        {
+          "task": "company_website_analysis",
+          "description": "Search and analyze TechCorp AI's official website...",
+          "assigned_to": "research_team",
+          "deadline": "24_hours"
+        }
+      ]
+    }
+  ],
+  "lead_score_adjustment": {
+    "current_score": 30,
+    "recommended_score": 45,
+    "adjustment_reason": "Identified key contact with relevant title in growing AI sector..."
+  },
+  "escalation_criteria": {
+    "escalate_if": [
+      "Company research reveals Series A+ funding",
+      "Employee count exceeds 50 people"
+    ],
+    "escalate_to": "senior_sales_manager"
+  }
+}
+```
+
+---
+
+### 4. Competitive Intelligence ⚠️
+
+**Webhook:** `https://perseustech.app.n8n.cloud/webhook/competitive-intel`
+**n8n ID:** `GsiHVPBiyIcpnyI4`
+**Steps:** 8 (Research → Find Competitors → Split → Research Each → Combine → Battle Card → Format → Respond)
+**Status:** PARTIAL - Executes but returns empty response (known Set node bug)
+
+---
+
+### 5. ABM Pipeline ❌
+
+**Webhook:** `https://perseustech.app.n8n.cloud/webhook/abm-pipeline`
+**n8n ID:** `kCPruMuipcIwd3DV`
+**Steps:** 9 (Find Execs → Split → Research → Pain Points → Aggregate → Stakeholder Map → Outreach → Playbook → Respond)
+**Status:** TIMEOUT - Exceeds n8n Cloud 100s webhook limit
+
+---
+
+## 12. Known Issues & Limitations
+
+### Timeout Constraints
+
+**n8n Cloud has a 100-second webhook response timeout.** Workflows that process multiple items through loops (e.g., researching 5+ executives) will timeout.
+
+**Workarounds:**
+1. Limit the number of items per execution (e.g., max 3)
+2. Use async patterns with callback webhooks
+3. Batch multiple items into single agent calls
+
+**Affected Workflows:** ABM Pipeline, any workflow with `itemLists` → loop → `aggregate` patterns processing 5+ items
+
+---
+
+### Empty Response Bug
+
+**Set nodes after agent steps may return empty responses.** This occurs when Set nodes reference `$json.field_name` but the agent output is at `$json.output`.
+
+**Affected Workflows:** Competitive Intelligence pipeline
+
+**Workaround:** Use simpler workflows without intermediate Set nodes, or ensure Set nodes reference `$json.output.field_name`.
+
+---
+
+### Agent Output Structure
+
+Apollo agent output follows this structure:
+```json
+{
+  "output": {
+    "action_taken": "apollo_search_people",
+    "contacts": [...],
+    "total_count": 50,
+    "_api_data": {
+      "apollo_people_search": {...}
+    }
+  }
+}
+```
+
+For `itemLists` nodes to work correctly, they must split on `output.contacts` (not `output._api_data.apollo_people_search.contacts`).
+
+---
+
+### Execution Time Estimates
+
+| Workflow Complexity | Typical Duration |
+|---------------------|------------------|
+| Simple (3-4 nodes) | 10-20 seconds |
+| Medium (5-6 nodes) | 25-40 seconds |
+| Complex with loops | 60-120+ seconds |
 
 ---
 
@@ -964,14 +1166,14 @@ curl -X POST "https://perseustech.app.n8n.cloud/webhook/sentiment-analysis" \
 The backend requires these environment variables:
 
 ```bash
-# Required
+# Required - LLM
 ANTHROPIC_API_KEY=sk-ant-...
 
-# n8n Integration
+# Required - n8n Integration
 N8N_API_KEY=n8n_api_...
 N8N_BASE_URL=https://perseustech.app.n8n.cloud/api/v1
 
-# Agent Runner (for n8n to call back)
+# Required - Agent Runner (for n8n to call back)
 AGENT_RUNNER_URL=https://perseus-tech-production.up.railway.app
 
 # API Integrations
@@ -983,8 +1185,27 @@ PHANTOMBUSTER_API_KEY=...
 OPENAI_API_KEY=sk-...
 SUPABASE_URL=...
 SUPABASE_KEY=...
+CLEARBIT_API_KEY=...
 ```
 
 ---
 
-*Last updated: February 2026*
+## Quick Reference
+
+| Endpoint | Method | Purpose |
+|----------|--------|---------|
+| `/health` | GET | Health check |
+| `/api/synthesize` | POST | Generate workflow from prompt |
+| `/api/agent/run` | POST | Run AI agent directly |
+| `/api/tests/run` | POST | Run tests on workflow |
+| `/api/iterate` | POST | Analyze failures & generate fixes |
+| `/api/n8n/push` | POST | Push workflow to n8n |
+| `/api/n8n/executions/{id}` | GET | Get execution history |
+| `/api/n8n/activate/{id}` | POST | Activate/deactivate workflow |
+| `/api/n8n/print/{id}` | GET | Print workflow as text |
+| `/api/n8n/print` | POST | Print workflow JSON as text |
+| `/api/webhook/proxy` | POST | Proxy webhook requests |
+
+---
+
+*Last updated: February 3, 2026*
