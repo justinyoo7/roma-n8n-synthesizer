@@ -188,8 +188,11 @@ async def update_workflow(workflow_id: str, request: UpdateWorkflowRequest) -> U
         if request.workflow_name:
             workflow_json["name"] = request.workflow_name
         
-        # Ensure the workflow has the correct ID
-        workflow_json["id"] = workflow_id
+        # Remove read-only fields that n8n doesn't allow in update requests
+        # The workflow ID is already in the URL path
+        read_only_fields = ["id", "createdAt", "updatedAt", "versionId"]
+        for field in read_only_fields:
+            workflow_json.pop(field, None)
         
         # Update the workflow
         result = await client.update_workflow(workflow_id, workflow_json)
