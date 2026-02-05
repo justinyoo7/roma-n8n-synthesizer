@@ -17,11 +17,6 @@ from app.models.workflow_ir import (
     EdgeSpec,
     StepType,
     TriggerType,
-    AgentSpec,
-    DataContract,
-    FieldSchema,
-    DataType,
-    Position,
 )
 from app.n8n.node_catalog import get_node_definition, N8N_NODE_CATALOG
 from app.n8n.capability_resolver import resolve_tool_id
@@ -140,15 +135,14 @@ class N8NCompiler:
             type_version = 3  # Use v3 for better split functionality
         
         # Handle agent steps - compile to HTTP Request to agent-runner
-        if step.type == StepType.AGENT or step.n8n_node_type == "@n8n/n8n-nodes-langchain.agent":
-            self._ensure_agent_spec(step)
+        if step.type == StepType.AGENT and step.agent:
             parameters = self._build_agent_parameters(step)
             node_type = "n8n-nodes-base.httpRequest"  # Force HTTP request for agents
             type_version = 4  # Use latest httpRequest version
             logger.info(
                 "compiling_agent_step",
                 step_name=step.name,
-                agent_name=step.agent.name if step.agent else None,
+                agent_name=step.agent.name,
             )
         
         # Route HTTP Request steps through agent-runner when tool_id is available
@@ -390,28 +384,6 @@ class N8NCompiler:
                 "timeout": 120000,  # 2 minutes timeout for agent operations
             },
         }
-
-    def _ensure_agent_spec(self, step: StepSpec) -> None:
-        """Ensure an AgentSpec exists for agent-type nodes."""
-        if step.agent:
-            return
-
-        agent_name = step.name.lower().replace(" ", "_")
-        step.agent = AgentSpec(
-            name=agent_name,
-            role=step.description or f"{step.name} agent",
-            tools_allowed=[],
-            input_schema=DataContract(
-                name="input",
-                fields=[FieldSchema(name="data", type=DataType.OBJECT, required=True)],
-            ),
-            output_schema=DataContract(
-                name="output",
-                fields=[FieldSchema(name="result", type=DataType.OBJECT, required=True)],
-            ),
-            max_tokens=2048,
-            temperature=0.7,
-        )
 
     def _build_registry_parameters(self, step: StepSpec) -> dict:
         """Build HTTP Request parameters for registry-based tool execution."""
