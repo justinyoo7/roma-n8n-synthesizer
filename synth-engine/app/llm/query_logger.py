@@ -255,7 +255,7 @@ async def log_query(
         
         # Add optional fields
         if workflow_id:
-            row["workflow_id"] = str(workflow_id)
+            row["workflow_id"] = str(workflow_id) if isinstance(workflow_id, UUID) else workflow_id
         if failure_reason:
             row["failure_reason"] = failure_reason[:1000]
         if raw_request:
@@ -263,7 +263,7 @@ async def log_query(
         if raw_response:
             row["raw_response"] = raw_response
         if user_id:
-            row["user_id"] = str(user_id)
+            row["user_id"] = str(user_id) if isinstance(user_id, UUID) else user_id
         
         result = await client.insert("queries", row)
         

@@ -27,8 +27,15 @@ logger = structlog.get_logger()
 class N8NCompiler:
     """Compiles WorkflowIR to n8n workflow JSON format."""
     
-    def __init__(self):
+    def __init__(self, route_apis_through_perseus: bool = True):
+        """Initialize compiler.
+        
+        Args:
+            route_apis_through_perseus: If True, route Apollo/Phantombuster calls
+                through Perseus agent-runner for logging. If False, use direct API calls.
+        """
         self.node_id_map: dict[str, str] = {}  # IR step ID -> n8n node ID
+        self.route_apis_through_perseus = route_apis_through_perseus
     
     def compile(self, ir: WorkflowIR) -> dict:
         """Compile a WorkflowIR to n8n workflow JSON.
@@ -61,8 +68,13 @@ class N8NCompiler:
         # Safety net: Convert any direct AI API calls to agent-runner calls
         nodes = [self._convert_direct_ai_calls(node) for node in nodes]
         
-        # Configure external API nodes (Apollo, Clearbit, etc.) with proper auth
-        nodes = [self._configure_external_api_node(node) for node in nodes]
+        # Configure external API nodes
+        if self.route_apis_through_perseus:
+            # Route through Perseus for logging
+            nodes = [self._route_api_through_perseus(node) for node in nodes]
+        else:
+            # Direct API calls with auth configured
+            nodes = [self._configure_external_api_node(node) for node in nodes]
         
         # Compile connections
         connections = self._compile_connections(ir)
@@ -353,13 +365,14 @@ class N8NCompiler:
         task_description_escaped = task_description.replace('"', '\\"')
         
         # HTTP Request v4 format - using string body with expression
-        # Use $json.body || $json to handle webhook data (extracts body) or direct data
-        # Include task description to guide the agent on what to do
+        # Include n8n_workflow_id for tracking - agent runner will look up internal ID
         json_body = f"""={{{{ JSON.stringify({{
   "agent_name": "{agent.name}",
   "input": Object.assign({{}}, ($json.body || $json), {{ task: "{task_description_escaped}" }}),
   "context": {{}},
-  "tools_allowed": []
+  "tools_allowed": [],
+  "n8n_workflow_id": $workflow.id,
+  "node_id": "{step.id}"
 }}) }}}}"""
         
         return {
@@ -381,19 +394,21 @@ class N8NCompiler:
         
         This converts direct API calls (Apollo, Perplexity, etc.) to agent-runner calls.
         The agent-runner has the API keys and proper integration code.
+        All calls are logged for analytics.
         """
         settings = get_settings()
         agent_runner_url = settings.agent_runner_url or "https://YOUR_AGENT_RUNNER_URL"
         
         task_description_escaped = task_description.replace('"', '\\"')
         
-        # Pass the previous node's data as input to the agent
-        # The agent will process this and make the appropriate API calls
+        # Pass n8n_workflow_id for tracking - agent runner will look up internal ID
         json_body = f"""={{{{ JSON.stringify({{
   "agent_name": "{agent_name}",
   "input": Object.assign({{}}, $json, {{ task: "{task_description_escaped}" }}),
   "context": {{}},
-  "tools_allowed": []
+  "tools_allowed": [],
+  "n8n_workflow_id": $workflow.id,
+  "node_id": "{step.id}"
 }}) }}}}"""
         
         return {
@@ -586,6 +601,82 @@ class N8NCompiler:
             **node,
             "parameters": params,
         }
+    
+    def _route_api_through_perseus(self, node: dict) -> dict:
+        """Route external API calls through Perseus agent-runner for logging.
+        
+        This converts direct Apollo/Phantombuster/Perplexity calls to agent-runner calls.
+        All executions are logged to the queries table.
+        """
+        # Only process httpRequest nodes
+        if node.get("type") != "n8n-nodes-base.httpRequest":
+            return node
+        
+        params = node.get("parameters", {})
+        url = params.get("url", "")
+        node_name = node.get("name", "")
+        
+        settings = get_settings()
+        agent_runner_url = settings.agent_runner_url or "https://YOUR_AGENT_RUNNER_URL"
+        
+        # Determine agent type based on URL
+        agent_name = None
+        if "api.apollo.io" in url:
+            if "/people/search" in url or "/mixed_people" in url:
+                agent_name = "apollo_search_people"
+            elif "/people/match" in url or "/people/enrich" in url:
+                agent_name = "apollo_enrich_person"
+            elif "/organizations/enrich" in url:
+                agent_name = "apollo_enrich_company"
+        elif "api.phantombuster.com" in url:
+            if "/launch" in url:
+                agent_name = "phantombuster_launch"
+            elif "/fetch-output" in url:
+                agent_name = "phantombuster_fetch_output"
+        elif "api.perplexity.ai" in url:
+            agent_name = "perplexity_search"
+        
+        # If we identified an agent, route through Perseus
+        if agent_name:
+            logger.info(
+                "routing_api_through_perseus",
+                node_name=node_name,
+                agent_name=agent_name,
+                original_url=url,
+            )
+            
+            # Get node_id from node properties
+            node_id = node.get("id", node_name.replace(" ", "_").lower())
+            
+            # Build Perseus agent call with n8n workflow ID
+            json_body = f"""={{{{ JSON.stringify({{
+  "agent_name": "{agent_name}",
+  "input": $json,
+  "n8n_workflow_id": $workflow.id,
+  "node_id": "{node_id}"
+}}) }}}}"""
+            
+            params = {
+                "method": "POST",
+                "url": f"{agent_runner_url}/api/agent/run",
+                "authentication": "none",
+                "sendBody": True,
+                "specifyBody": "string",
+                "body": json_body,
+                "contentType": "raw",
+                "rawContentType": "application/json",
+                "options": {
+                    "timeout": 120000,
+                },
+            }
+            
+            return {
+                **node,
+                "parameters": params,
+            }
+        
+        # Not a recognized API, return as-is
+        return node
     
     def _build_switch_rules(self, conditions: list[dict]) -> dict:
         """Build n8n switch rules from branch conditions."""

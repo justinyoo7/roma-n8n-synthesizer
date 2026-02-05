@@ -5,9 +5,12 @@ from abc import ABC, abstractmethod
 from typing import Any, Literal, Optional
 from uuid import UUID
 
+import structlog
 from pydantic import BaseModel
 
 from app.config import get_settings
+
+logger = structlog.get_logger()
 
 
 class LLMResponse(BaseModel):
@@ -419,7 +422,7 @@ async def generate_with_logging(
             if len(system_prompt) <= 1000:
                 query_text = f"[System]: {system_prompt}\n\n[User]: {user_message[:4000]}..."
             
-            await log_query(
+            log_result = await log_query(
                 workflow_id=workflow_id,
                 node_id=node_id or f"node_{int(time.time() * 1000)}",
                 node_name=node_name,
@@ -439,12 +442,23 @@ async def generate_with_logging(
             # Mark response as logged
             if response:
                 response.logged = True
+                if log_result:
+                    response.log_id = str(log_result.get("id"))
+            
+            # Log success/failure
+            if log_result:
+                logger.debug("llm_query_logged", node_name=node_name, log_id=log_result.get("id"))
+            else:
+                logger.warning("llm_query_log_returned_none", node_name=node_name)
                 
         except Exception as log_error:
-            # Don't let logging errors break the main flow
-            import structlog
-            logger = structlog.get_logger()
-            logger.warning("llm_query_log_failed", error=str(log_error))
+            # Don't let logging errors break the main flow, but log them clearly
+            logger.error(
+                "llm_query_log_failed",
+                error=str(log_error),
+                error_type=type(log_error).__name__,
+                node_name=node_name,
+            )
 
 
 async def generate_with_tools_and_logging(
@@ -506,7 +520,7 @@ async def generate_with_tools_and_logging(
             tool_names = [t.get("name", "unknown") for t in tools[:5]]
             query_text = f"[System]: {system_prompt[:1000]}...\n\n[User]: {user_message[:3000]}...\n\n[Tools]: {tool_names}"
             
-            await log_query(
+            log_result = await log_query(
                 workflow_id=workflow_id,
                 node_id=node_id or f"node_{int(time.time() * 1000)}",
                 node_name=node_name,
@@ -525,6 +539,18 @@ async def generate_with_tools_and_logging(
             
             if response:
                 response.logged = True
+                if log_result:
+                    response.log_id = str(log_result.get("id"))
+            
+            if log_result:
+                logger.debug("llm_query_logged", node_name=node_name, log_id=log_result.get("id"))
+            else:
+                logger.warning("llm_query_log_returned_none", node_name=node_name)
                 
-        except Exception:
-            pass  # Silently ignore logging errors
+        except Exception as log_error:
+            logger.error(
+                "llm_query_log_failed",
+                error=str(log_error),
+                error_type=type(log_error).__name__,
+                node_name=node_name,
+            )

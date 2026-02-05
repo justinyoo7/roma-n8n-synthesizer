@@ -5,11 +5,15 @@ It includes real API integrations for:
 - Apollo.io (lead enrichment, people search)
 - Phantombuster (LinkedIn automation)
 - Perplexity (AI-powered research)
+
+All calls are logged to the queries table for analytics and cost tracking.
 """
 import re
 import asyncio
 import json
+import time
 from typing import Optional, Any
+from uuid import UUID
 
 import httpx
 import structlog
@@ -18,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.llm.adapter import get_llm_adapter, generate_with_logging
+from app.llm.query_logger import log_query
 
 logger = structlog.get_logger()
 settings = get_settings()
@@ -185,6 +190,18 @@ class AgentRunRequest(BaseModel):
         default_factory=list,
         description="List of tools this agent is allowed to use",
     )
+    workflow_id: Optional[str] = Field(
+        None,
+        description="Internal workflow ID (UUID) for tracking (optional)",
+    )
+    n8n_workflow_id: Optional[str] = Field(
+        None,
+        description="n8n workflow ID for tracking (will be mapped to internal ID)",
+    )
+    node_id: Optional[str] = Field(
+        None,
+        description="Node ID for tracking (optional)",
+    )
 
 
 class AgentRunResponse(BaseModel):
@@ -195,6 +212,22 @@ class AgentRunResponse(BaseModel):
         default_factory=dict,
         description="Execution metadata (tokens, duration, etc.)",
     )
+    logged: bool = Field(False, description="Whether this call was logged to queries table")
+
+
+# =============================================================================
+# DIRECT API AGENT DEFINITIONS
+# These agents execute API calls directly without LLM, but still log to queries
+# =============================================================================
+
+DIRECT_API_AGENTS = {
+    "apollo_search_people",
+    "apollo_enrich_person", 
+    "apollo_enrich_company",
+    "phantombuster_launch",
+    "phantombuster_fetch_output",
+    "perplexity_search",
+}
 
 
 def detect_prompt_injection(text: str) -> bool:
@@ -914,10 +947,11 @@ async def run_agent(request: AgentRunRequest) -> AgentRunResponse:
     """
     Execute an agent step within an n8n workflow.
     
-    This endpoint supports real API integrations:
-    - Apollo.io for lead/company enrichment
-    - Phantombuster for LinkedIn automation
-    - Perplexity for AI-powered research
+    This endpoint supports:
+    1. LLM-based agents (classification, generation, etc.) - uses LLM + logs
+    2. Direct API agents (Apollo, Phantombuster, etc.) - direct call + logs
+    
+    All executions are logged to the queries table for analytics.
     
     Security guardrails:
     - Tool allowlist validation
@@ -926,12 +960,134 @@ async def run_agent(request: AgentRunRequest) -> AgentRunResponse:
     - Secret redaction in logs
     - Prompt injection detection
     """
+    start_time = time.time()
+    workflow_id = None
+    
+    # Parse workflow_id - prioritize internal UUID, fallback to n8n ID lookup
+    if request.workflow_id:
+        try:
+            workflow_id = UUID(request.workflow_id)
+        except ValueError:
+            logger.warning("invalid_workflow_id", workflow_id=request.workflow_id)
+    elif request.n8n_workflow_id:
+        # Look up internal workflow ID from n8n workflow ID
+        try:
+            from app.db.supabase import get_supabase_client
+            client = get_supabase_client()
+            
+            if client:
+                result = await client.select(
+                    "workflows",
+                    columns="id",
+                    filters={"n8n_workflow_id": request.n8n_workflow_id},
+                    limit=1,
+                )
+                
+                if result and len(result) > 0:
+                    workflow_id = UUID(result[0]["id"])
+                    logger.info(
+                        "mapped_n8n_workflow_id",
+                        n8n_workflow_id=request.n8n_workflow_id,
+                        internal_workflow_id=str(workflow_id),
+                    )
+                else:
+                    logger.warning(
+                        "n8n_workflow_id_not_found",
+                        n8n_workflow_id=request.n8n_workflow_id,
+                    )
+        except Exception as e:
+            logger.error(
+                "workflow_id_lookup_failed",
+                n8n_workflow_id=request.n8n_workflow_id,
+                error=str(e),
+            )
+    
     logger.info(
         "agent_run_request",
         agent_name=request.agent_name,
         input_keys=list(request.input.keys()),
         tools_requested=request.tools_allowed,
+        workflow_id=str(workflow_id) if workflow_id else None,
+        n8n_workflow_id=request.n8n_workflow_id,
     )
+    
+    # =========================================================================
+    # DIRECT API AGENTS (no LLM, but logged)
+    # =========================================================================
+    
+    if request.agent_name in DIRECT_API_AGENTS:
+        try:
+            # Execute the API call directly
+            if request.agent_name == "apollo_search_people":
+                result = await execute_apollo_search_people(request.input)
+            elif request.agent_name == "apollo_enrich_person":
+                result = await execute_apollo_enrich_person(request.input)
+            elif request.agent_name == "apollo_enrich_company":
+                result = await execute_apollo_enrich_company(request.input)
+            elif request.agent_name == "phantombuster_launch":
+                result = await execute_phantombuster_launch(request.input)
+            elif request.agent_name == "phantombuster_fetch_output":
+                result = await execute_phantombuster_fetch_output(request.input)
+            elif request.agent_name == "perplexity_search":
+                result = await execute_perplexity_search(request.input)
+            else:
+                result = {"error": "Unknown agent type"}
+            
+            latency_ms = int((time.time() - start_time) * 1000)
+            status = "success" if result.get("success") else "error"
+            
+            # Log to queries table
+            try:
+                await log_query(
+                    workflow_id=workflow_id,
+                    node_id=request.node_id or f"api_{request.agent_name}_{int(time.time() * 1000)}",
+                    node_name=request.agent_name,
+                    query_text=f"Direct API call: {request.agent_name}\nInput: {json.dumps(request.input, indent=2)[:1000]}",
+                    model="api-direct",  # Mark as non-LLM
+                    input_tokens=0,
+                    output_tokens=0,
+                    latency_ms=latency_ms,
+                    cost_usd=0.0,  # Could add Apollo credit costs later
+                    status=status,
+                    failure_reason=result.get("error") if not result.get("success") else None,
+                    raw_request={"agent": request.agent_name, "input_keys": list(request.input.keys())},
+                    raw_response={"success": result.get("success"), "has_data": bool(result.get("contacts") or result.get("person") or result.get("company"))},
+                )
+                logged = True
+            except Exception as log_error:
+                logger.error("direct_api_log_failed", error=str(log_error))
+                logged = False
+            
+            logger.info(
+                "direct_api_agent_complete",
+                agent_name=request.agent_name,
+                latency_ms=latency_ms,
+                success=result.get("success"),
+                logged=logged,
+            )
+            
+            return AgentRunResponse(
+                output=result,
+                metadata={
+                    "agent_name": request.agent_name,
+                    "agent_type": "direct_api",
+                    "latency_ms": latency_ms,
+                    "api_calls_made": [request.agent_name],
+                },
+                logged=logged,
+            )
+            
+        except Exception as e:
+            logger.error("direct_api_agent_error", agent_name=request.agent_name, error=str(e))
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    # =========================================================================
+    # LLM-BASED AGENTS (existing code)
+    # =========================================================================
+    
+    # =========================================================================
+    # LLM-BASED AGENTS (existing code)
+    # =========================================================================
     
     # Security check: Prompt injection detection
     input_text = str(request.input)
@@ -995,7 +1151,8 @@ Respond with valid JSON only."""
                 node_name=request.agent_name,
                 max_tokens=settings.agent_runner_max_tokens,
                 response_format="json",
-                node_id=f"agent_{request.agent_name}_{int(asyncio.get_event_loop().time() * 1000)}",
+                node_id=request.node_id or f"agent_{request.agent_name}_{int(asyncio.get_event_loop().time() * 1000)}",
+                workflow_id=workflow_id,
             ),
             timeout=settings.agent_runner_timeout,
         )
@@ -1043,11 +1200,13 @@ Respond with valid JSON only."""
             output=output,
             metadata={
                 "agent_name": request.agent_name,
+                "agent_type": "llm",
                 "tokens_used": result.metadata.get("tokens_used", 0),
                 "model": result.metadata.get("model", "unknown"),
                 "tools_used": validated_tools,
                 "api_calls_made": list(tool_results.keys()) if tool_results else [],
             },
+            logged=result.logged,
         )
         
     except asyncio.TimeoutError:
