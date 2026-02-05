@@ -65,6 +65,45 @@ async def health_check():
     }
 
 
+@app.get("/debug/supabase")
+async def debug_supabase():
+    """Debug endpoint to test Supabase connectivity and query logging."""
+    from app.db.supabase import get_supabase_client
+    from app.llm.query_logger import log_query
+    
+    results = {
+        "supabase_url_configured": bool(settings.supabase_url),
+        "supabase_key_configured": bool(settings.supabase_service_key),
+    }
+    
+    # Test Supabase client
+    client = get_supabase_client()
+    if client:
+        results["supabase_client"] = "connected"
+        
+        # Try to insert a test query
+        try:
+            log_result = await log_query(
+                node_name="Debug Test",
+                query_text="This is a test query from debug endpoint",
+                model="debug-test",
+                status="success",
+                input_tokens=10,
+                output_tokens=20,
+                latency_ms=100,
+                cost_usd=0.001,
+            )
+            results["test_insert"] = "success" if log_result else "returned_none"
+            results["inserted_row"] = log_result
+        except Exception as e:
+            results["test_insert"] = "failed"
+            results["insert_error"] = str(e)
+    else:
+        results["supabase_client"] = "not_configured"
+    
+    return results
+
+
 @app.on_event("startup")
 async def startup_event():
     """Application startup handler."""
