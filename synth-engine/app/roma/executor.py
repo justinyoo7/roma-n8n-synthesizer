@@ -13,7 +13,7 @@ from typing import Callable, Optional
 
 import structlog
 
-from app.llm.adapter import get_llm_adapter
+from app.llm.adapter import get_llm_adapter, generate_with_logging
 from app.models.task_tree import (
     TaskNode,
     TaskStatus,
@@ -203,7 +203,7 @@ NODE SELECTION GUIDANCE:
         
         prompt = context.get("prompt", "")
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt="""You are selecting a trigger for an n8n workflow.
 Available triggers:
 - webhook: Receive HTTP requests (POST, GET, etc.) - best for real-time integrations
@@ -227,6 +227,7 @@ Respond with JSON:
     }
 }""",
             user_message=f"Choose a trigger for: {prompt}",
+            node_name="Executor - Choose Trigger",
             response_format="json",
         )
         
@@ -244,7 +245,7 @@ Respond with JSON:
         
         prompt = context.get("prompt", "")
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt="""You are defining AI agents for a workflow.
 Each agent should have:
 - A clear role/purpose
@@ -278,6 +279,7 @@ Respond with JSON:
     ]
 }""",
             user_message=f"Define agents for: {prompt}",
+            node_name="Executor - Define Agents",
             response_format="json",
         )
         
@@ -296,7 +298,7 @@ Respond with JSON:
         prompt = context.get("prompt", "")
         agents = context.get("agents", [])
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt="""You are defining data contracts for workflow edges.
 Each contract specifies the shape of data flowing between steps.
 
@@ -325,6 +327,7 @@ Respond with JSON:
             user_message=f"""Define data contracts for: {prompt}
 
 Agents defined: {agents}""",
+            node_name="Executor - Define Data Contracts",
             response_format="json",
         )
         
@@ -374,7 +377,7 @@ Agents defined: {agents}""",
         if pre_resolved:
             pre_resolved_info = f"\n\nPRE-RESOLVED CAPABILITIES (use these recommendations):\n{json.dumps(pre_resolved, indent=2)}"
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt=f"""You are mapping workflow steps to n8n nodes.
 
 {node_catalog}
@@ -436,6 +439,7 @@ Remember:
 - LinkedIn personal actions (messages, connections, scraping) REQUIRE Phantombuster via HTTP
 - AI tasks (sentiment, classification, generation) MUST use step_type: "agent"
 - Use native nodes when available (HubSpot, Slack, Gmail, Clearbit, etc.)""",
+            node_name="Executor - Select n8n Nodes",
             response_format="json",
         )
         
@@ -453,7 +457,7 @@ Remember:
         
         prompt = context.get("prompt", "")
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt="""You are defining error handling for a workflow.
 
 Consider:
@@ -491,6 +495,7 @@ Respond with JSON:
     }
 }""",
             user_message=f"Define error handling for: {prompt}",
+            node_name="Executor - Error Handling",
             response_format="json",
         )
         
@@ -510,7 +515,7 @@ Respond with JSON:
         agents = context.get("agents", [])
         contracts = context.get("contracts", [])
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt="""You are generating test cases for an n8n workflow.
 
 Create at least 3 tests:
@@ -552,6 +557,7 @@ Respond with JSON:
 
 Agents: {agents}
 Data contracts: {contracts}""",
+            node_name="Executor - Generate Tests",
             response_format="json",
         )
         

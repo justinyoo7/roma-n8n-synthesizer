@@ -11,7 +11,7 @@ from uuid import UUID, uuid4
 
 import structlog
 
-from app.llm.adapter import get_llm_adapter
+from app.llm.adapter import get_llm_adapter, generate_with_logging
 from app.models.workflow_ir import (
     WorkflowIR,
     StepSpec,
@@ -162,9 +162,10 @@ Test failures:
 Analyze these failures and identify root causes."""
 
         try:
-            response = await self.llm.generate(
+            response = await generate_with_logging(
                 system_prompt=FAILURE_ANALYSIS_PROMPT,
-                user_prompt=prompt,
+                user_message=prompt,
+                node_name="Iterator - Failure Analysis",
                 response_format="json",
             )
             
@@ -272,9 +273,10 @@ Analyze these failures and identify root causes."""
         )
         
         try:
-            response = await self.llm.generate(
+            response = await generate_with_logging(
                 system_prompt="You are a workflow repair expert. Generate specific fixes in JSON format.",
-                user_prompt=prompt,
+                user_message=prompt,
+                node_name="Iterator - Fix Generation",
                 response_format="json",
             )
             

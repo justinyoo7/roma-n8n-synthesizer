@@ -115,6 +115,36 @@ CREATE INDEX IF NOT EXISTS idx_agent_run_logs_iteration_id ON agent_run_logs(ite
 CREATE INDEX IF NOT EXISTS idx_agent_run_logs_agent_name ON agent_run_logs(agent_name);
 CREATE INDEX IF NOT EXISTS idx_agent_run_logs_created_at ON agent_run_logs(created_at DESC);
 
+-- LLM Query logs table
+-- Stores all LLM/AI calls for analytics, cost tracking, and debugging
+CREATE TABLE IF NOT EXISTS queries (
+    id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
+    workflow_id UUID REFERENCES workflows(id) ON DELETE SET NULL,
+    node_id TEXT,
+    node_name TEXT,
+    query_text TEXT NOT NULL,
+    model TEXT,
+    input_tokens INTEGER,
+    output_tokens INTEGER,
+    latency_ms INTEGER,
+    cost_usd NUMERIC(10, 6),
+    status TEXT NOT NULL CHECK (status IN ('success', 'error')),
+    failure_reason TEXT,
+    raw_request JSONB,
+    raw_response JSONB,
+    user_id UUID,
+    created_at TIMESTAMPTZ DEFAULT NOW()
+);
+
+-- Create indexes for query lookups
+CREATE INDEX IF NOT EXISTS idx_queries_workflow_id ON queries(workflow_id);
+CREATE INDEX IF NOT EXISTS idx_queries_node_name ON queries(node_name);
+CREATE INDEX IF NOT EXISTS idx_queries_model ON queries(model);
+CREATE INDEX IF NOT EXISTS idx_queries_status ON queries(status);
+CREATE INDEX IF NOT EXISTS idx_queries_created_at ON queries(created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_queries_user_id ON queries(user_id);
+CREATE INDEX IF NOT EXISTS idx_queries_cost ON queries(cost_usd DESC);
+
 -- Function to update updated_at timestamp
 CREATE OR REPLACE FUNCTION update_updated_at_column()
 RETURNS TRIGGER AS $$
@@ -242,6 +272,24 @@ CREATE POLICY "Users can view agent logs of their workflows" ON agent_run_logs
 CREATE POLICY "Users can create agent logs" ON agent_run_logs
     FOR INSERT WITH CHECK (true);
 
+-- Enable RLS on queries table
+ALTER TABLE queries ENABLE ROW LEVEL SECURITY;
+
+-- Policies for queries (LLM call logs)
+CREATE POLICY "Users can view query logs of their workflows" ON queries
+    FOR SELECT USING (
+        user_id = auth.uid() OR
+        workflow_id IS NULL OR
+        EXISTS (
+            SELECT 1 FROM workflows
+            WHERE workflows.id = queries.workflow_id
+            AND workflows.user_id = auth.uid()
+        )
+    );
+
+CREATE POLICY "Users can create query logs" ON queries
+    FOR INSERT WITH CHECK (true);
+
 -- Service role bypass for backend operations
 -- These policies allow the service role to access all data
 CREATE POLICY "Service role can access all workflows" ON workflows
@@ -257,4 +305,7 @@ CREATE POLICY "Service role can access all artifacts" ON artifacts
     FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
 
 CREATE POLICY "Service role can access all agent_run_logs" ON agent_run_logs
+    FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');
+
+CREATE POLICY "Service role can access all queries" ON queries
     FOR ALL USING (auth.jwt() ->> 'role' = 'service_role');

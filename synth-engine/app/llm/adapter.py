@@ -1,7 +1,9 @@
 """Unified LLM adapter supporting both Anthropic and OpenAI."""
 import json
+import time
 from abc import ABC, abstractmethod
 from typing import Any, Literal, Optional
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -14,6 +16,10 @@ class LLMResponse(BaseModel):
     content: Any  # Parsed content (dict for JSON, str for text)
     raw_content: str  # Raw text response
     metadata: dict = {}
+    
+    # Logging metadata (optional, populated when logging is enabled)
+    logged: bool = False
+    log_id: Optional[str] = None
 
 
 class LLMAdapter(ABC):
@@ -329,3 +335,196 @@ def reset_adapter():
     """Reset the adapter (for testing)."""
     global _adapter
     _adapter = None
+
+
+async def generate_with_logging(
+    system_prompt: str,
+    user_message: str,
+    node_name: str = "LLM Call",
+    max_tokens: int = 4096,
+    temperature: float = 0.7,
+    response_format: Literal["text", "json"] = "text",
+    workflow_id: Optional[UUID] = None,
+    node_id: Optional[str] = None,
+    user_id: Optional[UUID] = None,
+    adapter: Optional[LLMAdapter] = None,
+) -> LLMResponse:
+    """Generate LLM response with automatic query logging.
+    
+    This is a convenience wrapper that logs all LLM calls to Supabase.
+    Logging failures don't break the main flow.
+    
+    Args:
+        system_prompt: System prompt for the LLM
+        user_message: User message for the LLM
+        node_name: Human-readable name for logging (e.g., "AI Classifier")
+        max_tokens: Maximum tokens in response
+        temperature: Sampling temperature
+        response_format: "text" or "json"
+        workflow_id: Associated workflow ID for tracking
+        node_id: Unique node identifier
+        user_id: Associated user ID
+        adapter: Optional LLM adapter (uses default if not provided)
+        
+    Returns:
+        LLMResponse with content, raw_content, and metadata
+    """
+    # Import here to avoid circular imports
+    from app.llm.query_logger import log_query, calculate_cost
+    
+    llm = adapter or get_llm_adapter()
+    start_time = time.time()
+    status = "success"
+    failure_reason = None
+    response = None
+    
+    try:
+        response = await llm.generate(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            max_tokens=max_tokens,
+            temperature=temperature,
+            response_format=response_format,
+        )
+        return response
+        
+    except Exception as e:
+        status = "error"
+        failure_reason = str(e)
+        raise
+        
+    finally:
+        # Calculate metrics
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        # Extract token usage from response metadata
+        input_tokens = 0
+        output_tokens = 0
+        model = "unknown"
+        
+        if response and response.metadata:
+            input_tokens = response.metadata.get("input_tokens", 0)
+            output_tokens = response.metadata.get("output_tokens", 0)
+            model = response.metadata.get("model", "unknown")
+        elif hasattr(llm, "model"):
+            model = llm.model
+        
+        # Calculate cost
+        cost_usd = calculate_cost(model, input_tokens, output_tokens)
+        
+        # Log to Supabase (fire and forget - errors won't break main flow)
+        try:
+            # Build query text (combine system prompt and user message, truncate)
+            query_text = f"[System]: {system_prompt[:1000]}...\n\n[User]: {user_message[:3500]}..."
+            if len(system_prompt) <= 1000:
+                query_text = f"[System]: {system_prompt}\n\n[User]: {user_message[:4000]}..."
+            
+            await log_query(
+                workflow_id=workflow_id,
+                node_id=node_id or f"node_{int(time.time() * 1000)}",
+                node_name=node_name,
+                query_text=query_text,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                cost_usd=cost_usd,
+                status=status,
+                failure_reason=failure_reason,
+                raw_request={"system": system_prompt[:500], "user": user_message[:500]},
+                raw_response={"content": response.raw_content[:1000]} if response else None,
+                user_id=user_id,
+            )
+            
+            # Mark response as logged
+            if response:
+                response.logged = True
+                
+        except Exception as log_error:
+            # Don't let logging errors break the main flow
+            import structlog
+            logger = structlog.get_logger()
+            logger.warning("llm_query_log_failed", error=str(log_error))
+
+
+async def generate_with_tools_and_logging(
+    system_prompt: str,
+    user_message: str,
+    tools: list[dict],
+    node_name: str = "LLM Tool Call",
+    max_tokens: int = 4096,
+    temperature: float = 0.7,
+    workflow_id: Optional[UUID] = None,
+    node_id: Optional[str] = None,
+    user_id: Optional[UUID] = None,
+    adapter: Optional[LLMAdapter] = None,
+) -> LLMResponse:
+    """Generate LLM response with tools and automatic query logging.
+    
+    Similar to generate_with_logging but for tool-enabled calls.
+    """
+    from app.llm.query_logger import log_query, calculate_cost
+    
+    llm = adapter or get_llm_adapter()
+    start_time = time.time()
+    status = "success"
+    failure_reason = None
+    response = None
+    
+    try:
+        response = await llm.generate_with_tools(
+            system_prompt=system_prompt,
+            user_message=user_message,
+            tools=tools,
+            max_tokens=max_tokens,
+            temperature=temperature,
+        )
+        return response
+        
+    except Exception as e:
+        status = "error"
+        failure_reason = str(e)
+        raise
+        
+    finally:
+        latency_ms = int((time.time() - start_time) * 1000)
+        
+        input_tokens = 0
+        output_tokens = 0
+        model = "unknown"
+        
+        if response and response.metadata:
+            input_tokens = response.metadata.get("input_tokens", 0)
+            output_tokens = response.metadata.get("output_tokens", 0)
+            model = response.metadata.get("model", "unknown")
+        elif hasattr(llm, "model"):
+            model = llm.model
+        
+        cost_usd = calculate_cost(model, input_tokens, output_tokens)
+        
+        try:
+            tool_names = [t.get("name", "unknown") for t in tools[:5]]
+            query_text = f"[System]: {system_prompt[:1000]}...\n\n[User]: {user_message[:3000]}...\n\n[Tools]: {tool_names}"
+            
+            await log_query(
+                workflow_id=workflow_id,
+                node_id=node_id or f"node_{int(time.time() * 1000)}",
+                node_name=node_name,
+                query_text=query_text,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                latency_ms=latency_ms,
+                cost_usd=cost_usd,
+                status=status,
+                failure_reason=failure_reason,
+                raw_request={"system": system_prompt[:500], "user": user_message[:500], "tools": tool_names},
+                raw_response={"content": response.raw_content[:1000]} if response else None,
+                user_id=user_id,
+            )
+            
+            if response:
+                response.logged = True
+                
+        except Exception:
+            pass  # Silently ignore logging errors

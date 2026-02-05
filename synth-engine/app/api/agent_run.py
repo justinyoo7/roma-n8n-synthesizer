@@ -17,7 +17,7 @@ from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
-from app.llm.adapter import get_llm_adapter
+from app.llm.adapter import get_llm_adapter, generate_with_logging
 
 logger = structlog.get_logger()
 settings = get_settings()
@@ -976,9 +976,7 @@ If API results are provided, incorporate them into your response."""
         if tool_results:
             context_data["api_results"] = tool_results
         
-        # Execute with timeout
-        llm = get_llm_adapter()
-        
+        # Build user message
         user_message = f"""Input data:
 {json.dumps(request.input, indent=2)}
 
@@ -989,12 +987,15 @@ Context:
 
 Respond with valid JSON only."""
 
+        # Execute with timeout and logging
         result = await asyncio.wait_for(
-            llm.generate(
+            generate_with_logging(
                 system_prompt=system_prompt,
                 user_message=user_message,
+                node_name=request.agent_name,
                 max_tokens=settings.agent_runner_max_tokens,
                 response_format="json",
+                node_id=f"agent_{request.agent_name}_{int(asyncio.get_event_loop().time() * 1000)}",
             ),
             timeout=settings.agent_runner_timeout,
         )

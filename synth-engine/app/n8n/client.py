@@ -287,19 +287,54 @@ class N8NClient:
             params=params,
         )
     
-    async def get_execution(self, execution_id: str) -> dict:
+    async def get_execution(self, execution_id: str, include_data: bool = True) -> dict:
         """Get a specific execution by ID.
         
         Args:
             execution_id: The execution ID
+            include_data: Whether to include full execution data (node outputs)
             
         Returns:
-            Execution details including node outputs
+            Execution details including node outputs if include_data=True
         """
-        return await self._request(
+        params = {}
+        if include_data:
+            params["includeData"] = "true"
+        
+        logger.info(
+            "get_execution_request",
+            execution_id=execution_id,
+            include_data=include_data,
+            params=params,
+        )
+        
+        result = await self._request(
             method="GET",
             endpoint=f"/executions/{execution_id}",
+            params=params if params else None,
         )
+        
+        # Debug logging to diagnose data: null issue
+        has_data = result.get("data") is not None
+        data_keys = list(result.get("data", {}).keys()) if has_data else []
+        
+        logger.info(
+            "get_execution_response",
+            execution_id=execution_id,
+            status=result.get("status"),
+            has_data=has_data,
+            data_keys=data_keys,
+            result_keys=list(result.keys()),
+        )
+        
+        if not has_data:
+            logger.warning(
+                "execution_data_is_null",
+                execution_id=execution_id,
+                hint="Check n8n settings: Save Data on Success should be 'All', not 'None'",
+            )
+        
+        return result
     
     def get_webhook_url(self, webhook_path: str, test_mode: bool = False) -> str:
         """Get the full webhook URL for a given path.

@@ -253,8 +253,38 @@ class ExecutionSummary(BaseModel):
     retry_success_id: Optional[str] = None
 
 
+class ExecutionData(BaseModel):
+    """Execution data structure with node run results."""
+    
+    resultData: Optional[dict] = None  # Contains runData with node outputs
+    startData: Optional[dict] = None
+    executionData: Optional[dict] = None
+
+
+class ExecutionInfo(BaseModel):
+    """Full execution information including node outputs."""
+    
+    id: str
+    status: str
+    startedAt: Optional[str] = None
+    stoppedAt: Optional[str] = None
+    finishedAt: Optional[str] = None
+    mode: Optional[str] = None
+    workflowId: Optional[str] = None
+    data: Optional[ExecutionData] = None  # Full execution data including node outputs
+
+
+class ExecutionDetailResponse(BaseModel):
+    """Response for execution detail endpoint - matches frontend expectations."""
+    
+    execution: ExecutionInfo
+    workflow_id: str
+    execution_id: str
+
+
+# Keep legacy model for backwards compatibility
 class ExecutionDetail(BaseModel):
-    """Detailed execution data including node outputs."""
+    """Detailed execution data including node outputs (legacy format)."""
     
     id: str
     status: str
@@ -350,14 +380,17 @@ async def get_executions(workflow_id: str, limit: int = 20, status: Optional[str
         )
 
 
-@router.get("/n8n/executions/{workflow_id}/{execution_id}", response_model=ExecutionDetail)
-async def get_execution_detail(workflow_id: str, execution_id: str) -> ExecutionDetail:
+@router.get("/n8n/executions/{workflow_id}/{execution_id}", response_model=ExecutionDetailResponse)
+async def get_execution_detail(workflow_id: str, execution_id: str) -> ExecutionDetailResponse:
     """
     Get detailed execution data including node outputs.
     
     Args:
         workflow_id: The n8n workflow ID (for validation)
         execution_id: The execution ID
+        
+    Returns:
+        Full execution details with data.resultData.runData containing node outputs
     """
     settings = get_settings()
     
@@ -369,17 +402,55 @@ async def get_execution_detail(workflow_id: str, execution_id: str) -> Execution
     
     try:
         client = N8NClient()
-        exec_data = await client.get_execution(execution_id)
+        # Request full execution data with includeData=true
+        exec_data = await client.get_execution(execution_id, include_data=True)
         
-        return ExecutionDetail(
+        # Enhanced debug logging to diagnose data: null issue
+        has_data = exec_data.get("data") is not None
+        logger.info(
+            "execution_detail_fetched",
+            execution_id=execution_id,
+            workflow_id=workflow_id,
+            status=exec_data.get("status"),
+            has_data=has_data,
+            data_keys=list(exec_data.get("data", {}).keys()) if has_data else [],
+            all_keys=list(exec_data.keys()),
+            mode=exec_data.get("mode"),
+        )
+        
+        if not has_data:
+            logger.warning(
+                "execution_data_null",
+                execution_id=execution_id,
+                workflow_id=workflow_id,
+                hint="n8n may not save execution data. Check n8n Settings > Executions > 'Save Data on Success' = All",
+            )
+        
+        # Build execution data structure
+        raw_data = exec_data.get("data")
+        execution_data = None
+        if raw_data:
+            execution_data = ExecutionData(
+                resultData=raw_data.get("resultData"),
+                startData=raw_data.get("startData"),
+                executionData=raw_data.get("executionData"),
+            )
+        
+        execution_info = ExecutionInfo(
             id=str(exec_data.get("id")),
             status=exec_data.get("status", "unknown"),
-            started_at=exec_data.get("startedAt"),
-            stopped_at=exec_data.get("stoppedAt"),
-            finished_at=exec_data.get("finishedAt"),
+            startedAt=exec_data.get("startedAt"),
+            stoppedAt=exec_data.get("stoppedAt"),
+            finishedAt=exec_data.get("finishedAt"),
             mode=exec_data.get("mode"),
-            workflow_id=exec_data.get("workflowId"),
-            data=exec_data.get("data"),
+            workflowId=exec_data.get("workflowId"),
+            data=execution_data,
+        )
+        
+        return ExecutionDetailResponse(
+            execution=execution_info,
+            workflow_id=workflow_id,
+            execution_id=execution_id,
         )
         
     except N8NClientError as e:
@@ -544,3 +615,65 @@ async def print_workflow_by_id(
     except Exception as e:
         logger.error("print_workflow_error", workflow_id=workflow_id, error=str(e))
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ============================================================================
+# Debug Endpoint for n8n Execution Data
+# ============================================================================
+
+@router.get("/n8n/debug/execution/{execution_id}")
+async def debug_execution(execution_id: str):
+    """
+    Debug endpoint to see raw n8n execution response.
+    
+    This helps diagnose why data might be null.
+    """
+    settings = get_settings()
+    
+    if not settings.n8n_api_key:
+        raise HTTPException(status_code=400, detail="n8n API key not configured")
+    
+    try:
+        client = N8NClient()
+        
+        # Try with includeData=true (string)
+        result_with_data = await client.get_execution(execution_id, include_data=True)
+        
+        # Also try fetching without the param to compare
+        result_without = await client._request(
+            method="GET",
+            endpoint=f"/executions/{execution_id}",
+        )
+        
+        return {
+            "debug_info": {
+                "execution_id": execution_id,
+                "n8n_base_url": settings.n8n_base_url,
+            },
+            "with_includeData_true": {
+                "keys": list(result_with_data.keys()),
+                "has_data": result_with_data.get("data") is not None,
+                "data_keys": list(result_with_data.get("data", {}).keys()) if result_with_data.get("data") else None,
+                "status": result_with_data.get("status"),
+                "mode": result_with_data.get("mode"),
+                "raw_data_preview": str(result_with_data.get("data"))[:500] if result_with_data.get("data") else None,
+            },
+            "without_param": {
+                "keys": list(result_without.keys()),
+                "has_data": result_without.get("data") is not None,
+                "data_keys": list(result_without.get("data", {}).keys()) if result_without.get("data") else None,
+            },
+            "hint": "If both show data: null, check n8n Settings > Executions > 'Save Data on Success' = All",
+        }
+        
+    except N8NClientError as e:
+        return {
+            "error": str(e),
+            "status_code": e.status_code,
+            "response_body": e.response_body,
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "type": type(e).__name__,
+        }

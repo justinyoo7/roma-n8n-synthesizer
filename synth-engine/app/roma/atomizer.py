@@ -11,7 +11,7 @@ from typing import Optional
 
 import structlog
 
-from app.llm.adapter import get_llm_adapter
+from app.llm.adapter import get_llm_adapter, generate_with_logging
 from app.models.workflow_ir import (
     WorkflowIR,
     StepSpec,
@@ -261,9 +261,10 @@ class Atomizer:
         """
         logger.info("atomizer_analyze", prompt_length=len(prompt))
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt=COMPLEXITY_PROMPT,
             user_message=f"Analyze this workflow description:\n\n{prompt}",
+            node_name="Atomizer - Complexity Analysis",
             response_format="json",
             temperature=0.3,  # Lower temperature for more consistent analysis
         )
@@ -288,9 +289,10 @@ class Atomizer:
         
         logger.info("atomizer_generate_atomic")
         
-        response = await self.llm.generate(
+        response = await generate_with_logging(
             system_prompt=ATOMIC_GENERATION_PROMPT,
             user_message=f"Create a simple n8n workflow for:\n\n{prompt}",
+            node_name="Atomizer - Workflow Generation",
             response_format="json",
             temperature=0.5,
         )
