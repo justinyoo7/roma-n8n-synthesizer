@@ -78,7 +78,8 @@ def resolve_tool_id(
     # If integration hint provided, try to use it first
     if integration_hint:
         api_name = integration_hint.lower()
-        if api_name in API_REGISTRY:
+        supported_apis = get_apis_for_capability(capability)
+        if api_name in API_REGISTRY and (not supported_apis or api_name in supported_apis):
             endpoint = _choose_endpoint_for_capability(api_name, capability)
             if endpoint:
                 return {
