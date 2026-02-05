@@ -19,6 +19,7 @@ from app.models.workflow_ir import (
     TriggerType,
 )
 from app.n8n.node_catalog import get_node_definition, N8N_NODE_CATALOG
+from app.n8n.capability_resolver import resolve_tool_id
 from app.config import get_settings
 
 logger = structlog.get_logger()
@@ -116,6 +117,14 @@ class N8NCompiler:
         
         # Build parameters
         parameters = self._build_parameters(step, node_def)
+
+        # Resolve tool_id if capability metadata is present
+        if not step.tool_id and step.capability:
+            resolved = resolve_tool_id(step.capability, step.integration_hint)
+            if resolved:
+                step.tool_id = resolved.get("tool_id")
+                if not step.integration_hint:
+                    step.integration_hint = resolved.get("api_name")
         
         # Determine node type (may be overridden for agent steps)
         node_type = step.n8n_node_type
@@ -136,32 +145,12 @@ class N8NCompiler:
                 agent_name=step.agent.name,
             )
         
-        # Convert direct API calls (Apollo, Perplexity, etc.) to agent-runner
-        # This is more reliable than trying to inject API keys into HTTP nodes
-        elif step.n8n_node_type == "n8n-nodes-base.httpRequest":
-            url = str(parameters.get("url", ""))
-            step_name_lower = step.name.lower()
-            
-            # Detect Apollo API calls
-            if "api.apollo.io" in url or "apollo" in step_name_lower:
-                parameters = self._build_api_agent_parameters(step, "apollo_agent", "Search and enrich leads using Apollo.io")
-                node_type = "n8n-nodes-base.httpRequest"
-                type_version = 4
-                logger.info("converting_apollo_to_agent", step_name=step.name)
-            
-            # Detect Perplexity API calls
-            elif "api.perplexity.ai" in url or "perplexity" in step_name_lower or "research" in step_name_lower:
-                parameters = self._build_api_agent_parameters(step, "research_agent", "Research using Perplexity AI")
-                node_type = "n8n-nodes-base.httpRequest"
-                type_version = 4
-                logger.info("converting_perplexity_to_agent", step_name=step.name)
-            
-            # Detect Phantombuster API calls
-            elif "api.phantombuster.com" in url or "phantombuster" in step_name_lower or "linkedin" in step_name_lower:
-                parameters = self._build_api_agent_parameters(step, "phantombuster_agent", "LinkedIn automation via Phantombuster")
-                node_type = "n8n-nodes-base.httpRequest"
-                type_version = 4
-                logger.info("converting_phantombuster_to_agent", step_name=step.name)
+        # Route HTTP Request steps through agent-runner when tool_id is available
+        elif step.n8n_node_type == "n8n-nodes-base.httpRequest" and step.tool_id:
+            parameters = self._build_registry_parameters(step)
+            node_type = "n8n-nodes-base.httpRequest"
+            type_version = 4
+            logger.info("routing_http_to_registry", step_name=step.name, tool_id=step.tool_id)
         
         node = {
             "id": n8n_id,
@@ -363,11 +352,18 @@ class N8NCompiler:
         
         # Escape quotes in task description for JSON embedding
         task_description_escaped = task_description.replace('"', '\\"')
+
+        tool_id_value = f"\"{step.tool_id}\"" if step.tool_id else "null"
+        capability_value = f"\"{step.capability}\"" if step.capability else "null"
+        integration_hint_value = f"\"{step.integration_hint}\"" if step.integration_hint else "null"
         
         # HTTP Request v4 format - using string body with expression
         # Include n8n_workflow_id for tracking - agent runner will look up internal ID
         json_body = f"""={{{{ JSON.stringify({{
   "agent_name": "{agent.name}",
+  "tool_id": {tool_id_value},
+  "capability": {capability_value},
+  "integration_hint": {integration_hint_value},
   "input": Object.assign({{}}, ($json.body || $json), {{ task: "{task_description_escaped}" }}),
   "context": {{}},
   "tools_allowed": [],
@@ -386,6 +382,44 @@ class N8NCompiler:
             "rawContentType": "application/json",
             "options": {
                 "timeout": 120000,  # 2 minutes timeout for agent operations
+            },
+        }
+
+    def _build_registry_parameters(self, step: StepSpec) -> dict:
+        """Build HTTP Request parameters for registry-based tool execution."""
+        settings = get_settings()
+        agent_runner_url = settings.agent_runner_url or "https://YOUR_AGENT_RUNNER_URL"
+
+        tool_id_value = f"\"{step.tool_id}\"" if step.tool_id else "null"
+        capability_value = f"\"{step.capability}\"" if step.capability else "null"
+        integration_hint_value = f"\"{step.integration_hint}\"" if step.integration_hint else "null"
+
+        task_description = step.description or step.name
+        task_description_escaped = task_description.replace('"', '\\"')
+
+        json_body = f"""={{{{ JSON.stringify({{
+  "agent_name": "{step.name}",
+  "tool_id": {tool_id_value},
+  "capability": {capability_value},
+  "integration_hint": {integration_hint_value},
+  "input": Object.assign({{}}, ($json.body || $json), {{ task: "{task_description_escaped}" }}),
+  "context": {{}},
+  "tools_allowed": [],
+  "n8n_workflow_id": $workflow.id,
+  "node_id": "{step.id}"
+}}) }}}}"""
+
+        return {
+            "method": "POST",
+            "url": f"{agent_runner_url}/api/agent/run",
+            "authentication": "none",
+            "sendBody": True,
+            "specifyBody": "string",
+            "body": json_body,
+            "contentType": "raw",
+            "rawContentType": "application/json",
+            "options": {
+                "timeout": 120000,
             },
         }
     

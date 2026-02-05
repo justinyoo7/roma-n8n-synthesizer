@@ -187,6 +187,11 @@ class StepSpec(BaseModel):
     
     # Agent-specific (only for AGENT type)
     agent: Optional[AgentSpec] = Field(None, description="Agent specification")
+
+    # Capability metadata for tool resolution
+    capability: Optional[str] = Field(None, description="High-level capability (e.g., people_search)")
+    integration_hint: Optional[str] = Field(None, description="Preferred integration (e.g., apollo)")
+    tool_id: Optional[str] = Field(None, description="Resolved tool identifier (api.endpoint)")
     
     # n8n mapping
     n8n_node_type: str = Field(..., description="n8n node type string")

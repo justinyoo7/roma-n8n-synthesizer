@@ -23,6 +23,8 @@ from pydantic import BaseModel, Field
 from app.config import get_settings
 from app.llm.adapter import get_llm_adapter, generate_with_logging
 from app.llm.query_logger import log_query
+from app.n8n.api_knowledge import API_REGISTRY, get_api_config, get_endpoint_config
+from app.n8n.capability_resolver import resolve_tool_id
 
 logger = structlog.get_logger()
 settings = get_settings()
@@ -112,6 +114,38 @@ APOLLO_TOOLS = {
     }
 }
 
+CLAY_TOOLS = {
+    "clay_enrich_person": {
+        "description": "Enrich person data using Clay's AI (email, LinkedIn, name, or company).",
+        "endpoint": "https://api.clay.com/v3/people/enrich",
+        "method": "POST",
+        "parameters": {
+            "email": "Person's email address",
+            "linkedin_url": "Person's LinkedIn profile URL",
+            "name": "Full name",
+            "company": "Company name",
+        },
+    },
+    "clay_enrich_company": {
+        "description": "Enrich company data using Clay (domain, name, or LinkedIn URL).",
+        "endpoint": "https://api.clay.com/v3/companies/enrich",
+        "method": "POST",
+        "parameters": {
+            "domain": "Company website domain (e.g., 'stripe.com')",
+            "name": "Company name",
+            "linkedin_url": "Company LinkedIn URL",
+        },
+    },
+    "clay_run_table": {
+        "description": "Run enrichment on a Clay table.",
+        "endpoint": "https://api.clay.com/v3/tables/{table_id}/run",
+        "method": "POST",
+        "parameters": {
+            "table_id": "Clay table ID to run",
+        },
+    },
+}
+
 PHANTOMBUSTER_TOOLS = {
     "phantombuster_launch": {
         "description": "Launch a Phantombuster agent/phantom for LinkedIn automation tasks.",
@@ -152,13 +186,16 @@ PERPLEXITY_TOOLS = {
 }
 
 # Combine all tools
-ALL_TOOLS = {**APOLLO_TOOLS, **PHANTOMBUSTER_TOOLS, **PERPLEXITY_TOOLS}
+ALL_TOOLS = {**APOLLO_TOOLS, **CLAY_TOOLS, **PHANTOMBUSTER_TOOLS, **PERPLEXITY_TOOLS}
 
 # Security: Allowed tools
 ALLOWED_TOOLS = {
     "apollo_search_people",
     "apollo_enrich_person",
     "apollo_enrich_company",
+    "clay_enrich_person",
+    "clay_enrich_company",
+    "clay_run_table",
     "phantombuster_launch",
     "phantombuster_fetch_output",
     "perplexity_search",
@@ -189,6 +226,18 @@ class AgentRunRequest(BaseModel):
     tools_allowed: list[str] = Field(
         default_factory=list,
         description="List of tools this agent is allowed to use",
+    )
+    tool_id: Optional[str] = Field(
+        None,
+        description="Resolved tool identifier (api.endpoint) for registry execution",
+    )
+    capability: Optional[str] = Field(
+        None,
+        description="Capability hint for tool resolution (e.g., people_search)",
+    )
+    integration_hint: Optional[str] = Field(
+        None,
+        description="Preferred integration for tool resolution (e.g., apollo)",
     )
     workflow_id: Optional[str] = Field(
         None,
@@ -224,6 +273,9 @@ DIRECT_API_AGENTS = {
     "apollo_search_people",
     "apollo_enrich_person", 
     "apollo_enrich_company",
+    "clay_enrich_person",
+    "clay_enrich_company",
+    "clay_run_table",
     "phantombuster_launch",
     "phantombuster_fetch_output",
     "perplexity_search",
@@ -522,6 +574,120 @@ async def execute_apollo_enrich_company(params: dict) -> dict:
         return {"error": f"Apollo API call failed: {str(e)}"}
 
 
+async def execute_clay_enrich_person(params: dict) -> dict:
+    """Execute Clay person enrichment API call."""
+    api_key = settings.clay_api_key
+    if not api_key:
+        return {"error": "Clay API key not configured", "data": None}
+    
+    body = {}
+    if params.get("email"):
+        body["email"] = params["email"]
+    if params.get("linkedin_url"):
+        body["linkedin_url"] = params["linkedin_url"]
+    if params.get("name"):
+        body["name"] = params["name"]
+    if params.get("company"):
+        body["company"] = params["company"]
+    
+    if not body:
+        return {"error": "No person data provided for Clay enrichment"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.clay.com/v3/people/enrich",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            
+            if 200 <= response.status_code < 300:
+                data = response.json()
+                return {
+                    "success": True,
+                    "person": data,
+                }
+            return {"error": f"Clay API error: {response.status_code}", "details": response.text[:200]}
+    except Exception as e:
+        logger.error("clay_person_enrich_error", error=str(e))
+        return {"error": f"Clay API call failed: {str(e)}"}
+
+
+async def execute_clay_enrich_company(params: dict) -> dict:
+    """Execute Clay company enrichment API call."""
+    api_key = settings.clay_api_key
+    if not api_key:
+        return {"error": "Clay API key not configured", "data": None}
+    
+    body = {}
+    if params.get("domain"):
+        body["domain"] = params["domain"]
+    if params.get("name"):
+        body["name"] = params["name"]
+    if params.get("linkedin_url"):
+        body["linkedin_url"] = params["linkedin_url"]
+    
+    if not body:
+        return {"error": "No company data provided for Clay enrichment"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                "https://api.clay.com/v3/companies/enrich",
+                json=body,
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            
+            if 200 <= response.status_code < 300:
+                data = response.json()
+                return {
+                    "success": True,
+                    "company": data,
+                }
+            return {"error": f"Clay API error: {response.status_code}", "details": response.text[:200]}
+    except Exception as e:
+        logger.error("clay_company_enrich_error", error=str(e))
+        return {"error": f"Clay API call failed: {str(e)}"}
+
+
+async def execute_clay_run_table(params: dict) -> dict:
+    """Execute Clay table run API call."""
+    api_key = settings.clay_api_key
+    if not api_key:
+        return {"error": "Clay API key not configured", "data": None}
+    
+    table_id = params.get("table_id")
+    if not table_id:
+        return {"error": "table_id is required to run a Clay table"}
+    
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.post(
+                f"https://api.clay.com/v3/tables/{table_id}/run",
+                headers={
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                },
+            )
+            
+            if 200 <= response.status_code < 300:
+                data = response.json()
+                return {
+                    "success": True,
+                    "run": data,
+                }
+            return {"error": f"Clay API error: {response.status_code}", "details": response.text[:200]}
+    except Exception as e:
+        logger.error("clay_table_run_error", error=str(e))
+        return {"error": f"Clay API call failed: {str(e)}"}
+
+
 async def execute_phantombuster_launch(params: dict) -> dict:
     """Execute Phantombuster agent launch."""
     api_key = settings.phantombuster_api_key
@@ -662,6 +828,9 @@ TOOL_EXECUTORS = {
     "apollo_search_people": execute_apollo_search_people,
     "apollo_enrich_person": execute_apollo_enrich_person,
     "apollo_enrich_company": execute_apollo_enrich_company,
+    "clay_enrich_person": execute_clay_enrich_person,
+    "clay_enrich_company": execute_clay_enrich_company,
+    "clay_run_table": execute_clay_run_table,
     "phantombuster_launch": execute_phantombuster_launch,
     "phantombuster_fetch_output": execute_phantombuster_fetch_output,
     "perplexity_search": execute_perplexity_search,
@@ -920,6 +1089,32 @@ async def execute_tool_if_needed(agent_name: str, input_data: dict) -> Optional[
             })
             return {"apollo_people_search": result}
     
+    # Clay agent - enrichment via Clay APIs
+    is_clay_agent = "clay" in agent_name.lower()
+    is_clay_input = any(k in input_str for k in ["clay", "enrich_person", "enrich_company"])
+    
+    if is_clay_agent or is_clay_input:
+        if input_data.get("table_id"):
+            result = await execute_clay_run_table({"table_id": input_data.get("table_id")})
+            return {"clay_table_run": result}
+        
+        if input_data.get("email") or input_data.get("linkedin_url") or input_data.get("name"):
+            result = await execute_clay_enrich_person({
+                "email": input_data.get("email"),
+                "linkedin_url": input_data.get("linkedin_url"),
+                "name": input_data.get("name"),
+                "company": input_data.get("company") or input_data.get("company_name"),
+            })
+            return {"clay_person_enrichment": result}
+        
+        if input_data.get("domain") or input_data.get("company") or input_data.get("company_name") or input_data.get("linkedin_url"):
+            result = await execute_clay_enrich_company({
+                "domain": input_data.get("domain"),
+                "name": input_data.get("company") or input_data.get("company_name"),
+                "linkedin_url": input_data.get("linkedin_url"),
+            })
+            return {"clay_company_enrichment": result}
+    
     # Phantombuster agent
     if "phantombuster" in agent_name.lower() or "linkedin_automation" in agent_name.lower():
         if input_data.get("phantom_id") or input_data.get("id"):
@@ -940,6 +1135,86 @@ async def execute_tool_if_needed(agent_name: str, input_data: dict) -> Optional[
             return {"perplexity_research": result}
     
     return None
+
+
+def _apply_path_params(path: str, input_data: dict) -> tuple[str, dict]:
+    """Replace {param} placeholders in the path using input_data."""
+    remaining = dict(input_data or {})
+    for match in re.findall(r"{([^}]+)}", path):
+        if match in remaining:
+            path = path.replace(f"{{{match}}}", str(remaining[match]))
+            remaining.pop(match, None)
+    return path, remaining
+
+
+async def execute_registry_tool(tool_id: str, input_data: dict) -> dict:
+    """Execute a tool from the API registry using tool_id (api.endpoint)."""
+    if "." not in tool_id:
+        return {"error": "Invalid tool_id format. Expected api.endpoint"}
+
+    api_name, endpoint_name = tool_id.split(".", 1)
+    config = get_api_config(api_name)
+    endpoint = get_endpoint_config(api_name, endpoint_name)
+    if not config or not endpoint:
+        return {"error": f"Unknown tool_id: {tool_id}"}
+
+    api_key = settings.get_api_key(api_name)
+    if not api_key:
+        return {"error": f"{api_name} API key not configured"}
+
+    sanitized_input = dict(input_data or {})
+    sanitized_input.pop("task", None)
+    path, remaining = _apply_path_params(endpoint.path, sanitized_input)
+    url = path if path.startswith("http") else f"{config.base_url}{path}"
+
+    headers = {"Content-Type": "application/json"}
+    params: dict = {}
+    json_body = None
+
+    if config.auth_type == "header":
+        headers[config.auth_header_name] = api_key
+    elif config.auth_type == "bearer":
+        headers["Authorization"] = f"Bearer {api_key}"
+    elif config.auth_type == "query":
+        params[config.auth_query_param] = api_key
+    elif config.auth_type == "basic":
+        headers["Authorization"] = f"Basic {api_key}"
+
+    method = endpoint.method.upper()
+    if method in ["GET", "DELETE"]:
+        params.update(remaining)
+    else:
+        json_body = remaining
+
+    try:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            response = await client.request(
+                method,
+                url,
+                headers=headers,
+                params=params if params else None,
+                json=json_body,
+            )
+
+            try:
+                data = response.json()
+            except Exception:
+                data = {"raw": response.text[:2000]}
+
+            if 200 <= response.status_code < 300:
+                return {
+                    "success": True,
+                    "status_code": response.status_code,
+                    "data": data,
+                }
+            return {
+                "error": f"{api_name} API error: {response.status_code}",
+                "details": data,
+                "status_code": response.status_code,
+            }
+    except Exception as e:
+        logger.error("registry_tool_error", tool_id=tool_id, error=str(e))
+        return {"error": f"Tool execution failed: {str(e)}"}
 
 
 @router.post("/agent/run", response_model=AgentRunResponse)
@@ -1010,6 +1285,52 @@ async def run_agent(request: AgentRunRequest) -> AgentRunResponse:
         workflow_id=str(workflow_id) if workflow_id else None,
         n8n_workflow_id=request.n8n_workflow_id,
     )
+
+    # =========================================================================
+    # REGISTRY-BASED TOOL EXECUTION (generic, no hardcoding)
+    # =========================================================================
+    resolved_tool = None
+    tool_id = request.tool_id
+    if not tool_id and request.capability:
+        resolved_tool = resolve_tool_id(request.capability, request.integration_hint)
+        tool_id = resolved_tool["tool_id"] if resolved_tool else None
+
+    if tool_id:
+        result = await execute_registry_tool(tool_id, request.input)
+        latency_ms = int((time.time() - start_time) * 1000)
+        status = "success" if result.get("success") else "error"
+
+        api_name = tool_id.split(".", 1)[0]
+        try:
+            await log_query(
+                workflow_id=workflow_id,
+                node_id=request.node_id or f"api_{tool_id}_{int(time.time() * 1000)}",
+                node_name=tool_id,
+                query_text=f"Registry tool call: {tool_id}\nInput: {json.dumps(request.input, indent=2)[:1000]}",
+                model="api-registry",
+                input_tokens=0,
+                output_tokens=0,
+                latency_ms=latency_ms,
+                cost_usd=0.0,
+                status=status,
+                failure_reason=result.get("error") if not result.get("success") else None,
+                raw_request={"tool_id": tool_id, "input_keys": list(request.input.keys())},
+                raw_response={"success": result.get("success")},
+            )
+            logged = True
+        except Exception as log_error:
+            logger.error("registry_tool_log_failed", error=str(log_error))
+            logged = False
+
+        return AgentRunResponse(
+            output=result,
+            metadata={
+                "tool_id": tool_id,
+                "api_name": api_name,
+                "latency_ms": latency_ms,
+            },
+            logged=logged,
+        )
     
     # =========================================================================
     # DIRECT API AGENTS (no LLM, but logged)
@@ -1024,6 +1345,12 @@ async def run_agent(request: AgentRunRequest) -> AgentRunResponse:
                 result = await execute_apollo_enrich_person(request.input)
             elif request.agent_name == "apollo_enrich_company":
                 result = await execute_apollo_enrich_company(request.input)
+            elif request.agent_name == "clay_enrich_person":
+                result = await execute_clay_enrich_person(request.input)
+            elif request.agent_name == "clay_enrich_company":
+                result = await execute_clay_enrich_company(request.input)
+            elif request.agent_name == "clay_run_table":
+                result = await execute_clay_run_table(request.input)
             elif request.agent_name == "phantombuster_launch":
                 result = await execute_phantombuster_launch(request.input)
             elif request.agent_name == "phantombuster_fetch_output":

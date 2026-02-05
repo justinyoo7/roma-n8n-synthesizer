@@ -28,6 +28,73 @@ from .api_knowledge import (
     PHANTOMBUSTER_LINKEDIN_PHANTOMS,
 )
 
+# Capability -> preferred endpoint names (in order)
+CAPABILITY_ENDPOINT_PREFERENCES = {
+    "people_search": ["search_people", "people_search", "search"],
+    "person_enrichment": ["enrich_person", "person_enrich", "enrich"],
+    "company_enrichment": ["enrich_company", "company_enrich", "enrich"],
+    "email_finder": ["find_email", "email_finder", "search_people"],
+    "research": ["research", "chat_completions", "search"],
+    "web_search": ["web_search", "chat_completions", "search"],
+    "company_research": ["company_research", "research", "chat_completions"],
+    "lead_research": ["lead_research", "research", "chat_completions"],
+    "cold_email": ["add_leads", "add_lead_to_campaign"],
+}
+
+
+def _choose_endpoint_for_capability(api_name: str, capability: str) -> Optional[str]:
+    """Pick the best endpoint name for an API and capability."""
+    config = get_api_config(api_name)
+    if not config:
+        return None
+
+    preferences = CAPABILITY_ENDPOINT_PREFERENCES.get(capability, [])
+    for pref in preferences:
+        if pref in config.endpoints:
+            return pref
+
+    # Fallback to first available endpoint
+    if config.endpoints:
+        return next(iter(config.endpoints.keys()))
+    return None
+
+
+def resolve_tool_id(
+    capability: Optional[str],
+    integration_hint: Optional[str] = None,
+) -> Optional[dict]:
+    """Resolve a tool_id for a capability and optional integration hint.
+
+    Returns dict with tool_id, api_name, and endpoint when resolved.
+    """
+    if not capability:
+        return None
+
+    # If integration hint provided, try to use it first
+    if integration_hint:
+        api_name = integration_hint.lower()
+        if api_name in API_REGISTRY:
+            endpoint = _choose_endpoint_for_capability(api_name, capability)
+            if endpoint:
+                return {
+                    "tool_id": f"{api_name}.{endpoint}",
+                    "api_name": api_name,
+                    "api_endpoint": endpoint,
+                }
+
+    # Otherwise, select from APIs that support the capability
+    for api_name in get_apis_for_capability(capability):
+        if api_name in API_REGISTRY:
+            endpoint = _choose_endpoint_for_capability(api_name, capability)
+            if endpoint:
+                return {
+                    "tool_id": f"{api_name}.{endpoint}",
+                    "api_name": api_name,
+                    "api_endpoint": endpoint,
+                }
+
+    return None
+
 
 @dataclass
 class ResolvedCapability:
