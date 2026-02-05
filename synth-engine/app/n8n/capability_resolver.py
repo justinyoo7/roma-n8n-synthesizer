@@ -30,11 +30,6 @@ from .api_knowledge import (
 
 # Capability -> preferred endpoint names (in order)
 CAPABILITY_ENDPOINT_PREFERENCES = {
-    "linkedin_messages": ["launch_agent"],
-    "linkedin_connections": ["launch_agent"],
-    "linkedin_search": ["launch_agent"],
-    "linkedin_scraping": ["launch_agent"],
-    "linkedin_automation": ["launch_agent"],
     "people_search": ["search_people", "people_search", "search"],
     "person_enrichment": ["enrich_person", "person_enrich", "enrich"],
     "company_enrichment": ["enrich_company", "company_enrich", "enrich"],
