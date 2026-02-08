@@ -8,7 +8,7 @@ into a coherent WorkflowIR. It handles:
 4. Applying layout positions to all nodes
 """
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 import structlog
 
@@ -79,6 +79,9 @@ class Aggregator:
         
         # Fix branching topology (LLM often gets this wrong)
         edges = self._fix_branching_topology(trigger, steps, edges)
+        
+        # Enforce messaging branching requirements if needed
+        steps, edges = self._enforce_messaging_branching(prompt, trigger, steps, edges)
         
         # Ensure all steps are reachable - fix missing edges
         edges = self._ensure_reachability(trigger, steps, edges)
@@ -524,6 +527,119 @@ class Aggregator:
         )
         
         return fixed_edges
+
+    def _enforce_messaging_branching(
+        self,
+        prompt: str,
+        trigger: StepSpec,
+        steps: list[StepSpec],
+        edges: list[EdgeSpec],
+    ) -> tuple[list[StepSpec], list[EdgeSpec]]:
+        """Ensure response/follow-up paths are branched, not linear."""
+        prompt_lower = prompt.lower()
+        keywords = [
+            "branch", "branches", "branching", "if/else", "if else", "path", "paths",
+            "reply", "replies", "no-reply", "no reply", "no-response", "no response",
+            "objection", "follow-up path", "follow up path", "follow-up paths", "follow up paths",
+        ]
+        if not any(k in prompt_lower for k in keywords):
+            return steps, edges
+
+        def is_response_step(step: StepSpec) -> bool:
+            name = step.name.lower()
+            return any(
+                token in name
+                for token in [
+                    "reply", "respond", "response", "no reply", "no-reply",
+                    "no response", "no-response", "follow-up", "follow up",
+                    "objection", "handle objection",
+                ]
+            )
+
+        response_indices = [i for i, s in enumerate(steps) if is_response_step(s)]
+        if len(response_indices) < 2:
+            return steps, edges
+
+        branch_id_base = "response_branch"
+        branch_id = branch_id_base
+        existing_ids = {s.id for s in steps}
+        if branch_id in existing_ids:
+            branch_id = f"{branch_id_base}_{uuid4().hex[:6]}"
+
+        insert_idx = min(response_indices)
+        branch_step = StepSpec(
+            id=branch_id,
+            name="Response Branch",
+            type=StepType.BRANCH,
+            n8n_node_type="n8n-nodes-base.switch",
+            n8n_type_version=1,
+            parameters={},
+            branch_conditions=[
+                {"name": "responded", "field": "response_status", "value": "responded", "operation": "equals"},
+                {"name": "no_response", "field": "response_status", "value": "no_response", "operation": "equals"},
+                {"name": "objection", "field": "response_status", "value": "objection", "operation": "equals"},
+            ],
+            position=Position(x=steps[insert_idx].position.x - 200, y=steps[insert_idx].position.y),
+        )
+
+        steps = steps[:insert_idx] + [branch_step] + steps[insert_idx:]
+
+        response_ids = {steps[i + 1].id for i in response_indices}
+        response_steps = [s for s in steps if s.id in response_ids]
+
+        # Determine predecessor and successor for branching
+        predecessor = steps[insert_idx - 1] if insert_idx > 0 else None
+        successor = None
+        max_response_idx = max(response_indices) + 1  # +1 due to insertion
+        if max_response_idx + 1 < len(steps):
+            successor = steps[max_response_idx + 1]
+
+        # Remove edges that connect response steps linearly
+        filtered_edges = [
+            e
+            for e in edges
+            if e.source_id not in response_ids and e.target_id not in response_ids
+        ]
+
+        # Connect predecessor to branch
+        if predecessor:
+            filtered_edges = [
+                e for e in filtered_edges if not (e.source_id == predecessor.id)
+            ]
+            filtered_edges.append(EdgeSpec(source_id=predecessor.id, target_id=branch_step.id))
+        else:
+            filtered_edges.append(EdgeSpec(source_id=trigger.id, target_id=branch_step.id))
+
+        # Branch to response steps
+        condition_order = ["responded", "no_response", "objection"]
+        for i, step in enumerate(response_steps):
+            name_lower = step.name.lower()
+            if "objection" in name_lower:
+                condition = "objection"
+            elif "no reply" in name_lower or "no-reply" in name_lower or "no response" in name_lower or "no-response" in name_lower or "follow" in name_lower:
+                condition = "no_response"
+            elif "reply" in name_lower or "respond" in name_lower:
+                condition = "responded"
+            else:
+                condition = condition_order[min(i, len(condition_order) - 1)]
+            filtered_edges.append(
+                EdgeSpec(
+                    source_id=branch_step.id,
+                    target_id=step.id,
+                    source_output=f"output{condition_order.index(condition)}",
+                    condition=condition,
+                )
+            )
+
+            if successor:
+                filtered_edges.append(
+                    EdgeSpec(
+                        source_id=step.id,
+                        target_id=successor.id,
+                    )
+                )
+
+        return steps, filtered_edges
     
     def _build_topology_aware_edges(
         self,

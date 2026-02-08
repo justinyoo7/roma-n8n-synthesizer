@@ -418,6 +418,12 @@ CRITICAL RULES:
 7. For data transformation: use n8n-nodes-base.set
 8. For webhooks: use n8n-nodes-base.webhook (trigger) and n8n-nodes-base.respondToWebhook
 
+BRANCHING REQUIREMENTS (only when explicitly required by the prompt):
+- If the prompt explicitly asks for branching/paths (e.g., replies vs no-replies vs objections, follow-up paths, if/else),
+  include branch steps (step_type: "branch", n8n_node_type: "n8n-nodes-base.switch").
+- Include branch_conditions matching the prompt (e.g., responded, no_response, objection).
+- Ensure edges fan out from branch nodes to distinct messaging/follow-up steps.
+
 NEVER configure direct calls to api.openai.com or api.anthropic.com.
 All AI functionality must use step_type: "agent".
 
