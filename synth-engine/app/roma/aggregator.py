@@ -556,35 +556,59 @@ class Aggregator:
                 ]
             )
 
+        def is_messaging_step(step: StepSpec) -> bool:
+            name = step.name.lower()
+            return any(
+                token in name
+                for token in [
+                    "message", "messaging", "outreach", "follow", "reply",
+                    "objection", "sequence", "draft", "respond",
+                ]
+            )
+
         response_indices = [i for i, s in enumerate(steps) if is_response_step(s)]
-        if len(response_indices) < 2:
+        messaging_indices = [i for i, s in enumerate(steps) if is_messaging_step(s)]
+        if len(response_indices) < 2 and len(messaging_indices) < 2:
             return steps, edges
 
-        branch_id_base = "response_branch"
-        branch_id = branch_id_base
-        existing_ids = {s.id for s in steps}
-        if branch_id in existing_ids:
-            branch_id = f"{branch_id_base}_{uuid4().hex[:6]}"
+        # Find an existing branch node or create one
+        branch_steps = [s for s in steps if s.type == StepType.BRANCH or "branch" in s.name.lower()]
+        branch_step = branch_steps[0] if branch_steps else None
 
-        insert_idx = min(response_indices)
-        branch_step = StepSpec(
-            id=branch_id,
-            name="Response Branch",
-            type=StepType.BRANCH,
-            n8n_node_type="n8n-nodes-base.switch",
-            n8n_type_version=1,
-            parameters={},
-            branch_conditions=[
-                {"name": "responded", "field": "response_status", "value": "responded", "operation": "equals"},
-                {"name": "no_response", "field": "response_status", "value": "no_response", "operation": "equals"},
-                {"name": "objection", "field": "response_status", "value": "objection", "operation": "equals"},
-            ],
-            position=Position(x=steps[insert_idx].position.x - 200, y=steps[insert_idx].position.y),
-        )
+        if not branch_step:
+            branch_id_base = "messaging_branch"
+            branch_id = branch_id_base
+            existing_ids = {s.id for s in steps}
+            if branch_id in existing_ids:
+                branch_id = f"{branch_id_base}_{uuid4().hex[:6]}"
 
-        steps = steps[:insert_idx] + [branch_step] + steps[insert_idx:]
+            insert_idx = min(messaging_indices or response_indices)
+            branch_step = StepSpec(
+                id=branch_id,
+                name="Messaging Branch",
+                type=StepType.BRANCH,
+                n8n_node_type="n8n-nodes-base.switch",
+                n8n_type_version=1,
+                parameters={},
+                branch_conditions=[
+                    {"name": "responded", "field": "branch_key", "value": "responded", "operation": "equals"},
+                    {"name": "no_response", "field": "branch_key", "value": "no_response", "operation": "equals"},
+                    {"name": "objection", "field": "branch_key", "value": "objection", "operation": "equals"},
+                ],
+                position=Position(x=steps[insert_idx].position.x - 200, y=steps[insert_idx].position.y),
+            )
 
-        response_ids = {steps[i + 1].id for i in response_indices}
+            steps = steps[:insert_idx] + [branch_step] + steps[insert_idx:]
+
+        if not branch_step.branch_conditions:
+            branch_step.branch_conditions = [
+                {"name": "responded", "field": "branch_key", "value": "responded", "operation": "equals"},
+                {"name": "no_response", "field": "branch_key", "value": "no_response", "operation": "equals"},
+                {"name": "objection", "field": "branch_key", "value": "objection", "operation": "equals"},
+            ]
+
+        candidate_indices = response_indices or messaging_indices
+        response_ids = {steps[i + 1].id for i in candidate_indices}
         response_steps = [s for s in steps if s.id in response_ids]
 
         # Determine predecessor and successor for branching
