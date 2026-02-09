@@ -7,6 +7,7 @@ into a coherent WorkflowIR. It handles:
 3. Validating the combined workflow structure
 4. Applying layout positions to all nodes
 """
+import os
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -110,6 +111,7 @@ class Aggregator:
                 "original_prompt": prompt,
                 "artifact_count": len(tree.get_all_artifacts()),
                 "branching_enforcer_version": "v1",
+                "build_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
             },
         )
         

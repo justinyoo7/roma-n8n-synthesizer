@@ -1,4 +1,5 @@
 """FastAPI application entry point."""
+import os
 import structlog
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
@@ -62,6 +63,7 @@ async def health_check():
         "status": "healthy",
         "version": "0.1.0",
         "llm_provider": settings.llm_provider,
+        "build_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
     }
 
 
