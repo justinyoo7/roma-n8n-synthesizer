@@ -109,6 +109,7 @@ class Aggregator:
             metadata={
                 "original_prompt": prompt,
                 "artifact_count": len(tree.get_all_artifacts()),
+                "branching_enforcer_version": "v1",
             },
         )
         
@@ -566,14 +567,39 @@ class Aggregator:
                 ]
             )
 
-        response_indices = [i for i, s in enumerate(steps) if is_response_step(s)]
-        messaging_indices = [i for i, s in enumerate(steps) if is_messaging_step(s)]
-        if len(response_indices) < 2 and len(messaging_indices) < 2:
+        response_steps = [s for s in steps if is_response_step(s)]
+        messaging_steps = [s for s in steps if is_messaging_step(s)]
+        if len(response_steps) < 2 and len(messaging_steps) < 2:
             return steps, edges
 
         # Find an existing branch node or create one
         branch_steps = [s for s in steps if s.type == StepType.BRANCH or "branch" in s.name.lower()]
         branch_step = branch_steps[0] if branch_steps else None
+
+        def create_agent_step(step_id: str, name: str, x: int, y: int) -> StepSpec:
+            agent_name = step_id
+            return StepSpec(
+                id=step_id,
+                name=name,
+                type=StepType.AGENT,
+                n8n_node_type="n8n-nodes-base.set",
+                n8n_type_version=1,
+                parameters={},
+                agent=AgentSpec(
+                    name=agent_name,
+                    role=f"{name} agent",
+                    tools_allowed=[],
+                    input_schema=DataContract(
+                        name=f"{agent_name}_input",
+                        fields=[FieldSchema(name="input", type=DataType.OBJECT)],
+                    ),
+                    output_schema=DataContract(
+                        name=f"{agent_name}_output",
+                        fields=[FieldSchema(name="output", type=DataType.OBJECT)],
+                    ),
+                ),
+                position=Position(x=x, y=y),
+            )
 
         if not branch_step:
             branch_id_base = "messaging_branch"
@@ -582,7 +608,12 @@ class Aggregator:
             if branch_id in existing_ids:
                 branch_id = f"{branch_id_base}_{uuid4().hex[:6]}"
 
-            insert_idx = min(messaging_indices or response_indices)
+            # Prefer placing branch after a strategy/segmentation step if present
+            strategy_idx = next(
+                (i for i, s in enumerate(steps) if "strategy" in s.name.lower()),
+                None,
+            )
+            insert_idx = strategy_idx + 1 if strategy_idx is not None else max(0, min(len(steps), len(steps)))
             branch_step = StepSpec(
                 id=branch_id,
                 name="Messaging Branch",
@@ -607,28 +638,51 @@ class Aggregator:
                 {"name": "objection", "field": "branch_key", "value": "objection", "operation": "equals"},
             ]
 
-        candidate_indices = response_indices or messaging_indices
-        response_ids = {steps[i + 1].id for i in candidate_indices}
-        response_steps = [s for s in steps if s.id in response_ids]
+        # Ensure we have explicit response path steps
+        response_steps = [s for s in steps if is_response_step(s)]
+        if len(response_steps) < 2:
+            existing_ids = {s.id for s in steps}
+            base_x = branch_step.position.x + 250
+            base_y = branch_step.position.y - 120
+            defaults = [
+                ("responded_path", "Handle Replies"),
+                ("no_response_path", "Handle No Response Follow-up"),
+                ("objection_path", "Handle Objections"),
+            ]
+            for idx, (step_id, name) in enumerate(defaults):
+                new_id = step_id
+                if new_id in existing_ids:
+                    new_id = f"{step_id}_{uuid4().hex[:6]}"
+                response_steps.append(
+                    create_agent_step(new_id, name, base_x, base_y + idx * 140)
+                )
+                existing_ids.add(new_id)
+            steps.extend(response_steps[-3:])
 
         # Determine predecessor and successor for branching
-        predecessor = steps[insert_idx - 1] if insert_idx > 0 else None
+        predecessor = next(
+            (s for s in steps if s.id != branch_step.id and s.position.x < branch_step.position.x),
+            None,
+        )
         successor = None
-        max_response_idx = max(response_indices) + 1  # +1 due to insertion
-        if max_response_idx + 1 < len(steps):
-            successor = steps[max_response_idx + 1]
+        for step in steps:
+            if step.id == branch_step.id:
+                continue
+            if step.position.x > branch_step.position.x and not is_response_step(step):
+                successor = step
+                break
 
-        # Remove edges that connect response steps linearly
+        response_ids = {s.id for s in response_steps}
         filtered_edges = [
             e
             for e in edges
-            if e.source_id not in response_ids and e.target_id not in response_ids
+            if e.source_id not in response_ids and e.target_id not in response_ids and e.source_id != branch_step.id
         ]
 
         # Connect predecessor to branch
         if predecessor:
             filtered_edges = [
-                e for e in filtered_edges if not (e.source_id == predecessor.id)
+                e for e in filtered_edges if not (e.source_id == predecessor.id and e.target_id == branch_step.id)
             ]
             filtered_edges.append(EdgeSpec(source_id=predecessor.id, target_id=branch_step.id))
         else:
