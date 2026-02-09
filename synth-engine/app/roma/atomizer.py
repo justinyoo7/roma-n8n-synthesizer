@@ -7,6 +7,7 @@ The Atomizer analyzes the user's prompt and determines:
 For atomic requests, it produces a draft WorkflowIR directly.
 For complex requests, it creates the root of a TaskTree for the Planner.
 """
+import os
 from typing import Optional
 from uuid import UUID
 
@@ -276,7 +277,7 @@ class Atomizer:
         )
         
         analysis = response.content
-        is_atomic = analysis.get("complexity") == "atomic"
+        is_atomic = analysis.get("complexity") == "atomic" and not analysis.get("has_branching")
         
         logger.info(
             "atomizer_analysis_complete",
@@ -491,6 +492,8 @@ class Atomizer:
             metadata={
                 "original_prompt": original_prompt,
                 "integrations_used": self._extract_integrations(data),
+                "branching_enforcer_version": "v1",
+                "build_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
             },
         )
     
