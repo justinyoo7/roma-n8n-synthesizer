@@ -7,6 +7,7 @@ The compiler handles:
 - Handling branching and merging
 """
 from typing import Any, Optional
+import copy
 from uuid import uuid4
 
 import structlog
@@ -967,49 +968,240 @@ class N8NCompiler:
         
         Returns list of validation errors (empty if valid).
         """
-        errors = []
+        detailed = self.validate_compiled_detailed(compiled)
+        return [e["message"] for e in detailed if e.get("severity") == "error"]
+
+    def validate_compiled_detailed(self, compiled: dict) -> list[dict]:
+        """Validate compiled workflow JSON and return structured errors."""
+        errors: list[dict] = []
+
+        def add_error(
+            message: str,
+            node_name: Optional[str] = None,
+            node_type: Optional[str] = None,
+            path: Optional[str] = None,
+            severity: str = "error",
+            code: Optional[str] = None,
+        ) -> None:
+            errors.append(
+                {
+                    "message": message,
+                    "node_name": node_name,
+                    "node_type": node_type,
+                    "path": path,
+                    "severity": severity,
+                    "code": code,
+                }
+            )
         
         # Check required fields
         if "name" not in compiled:
-            errors.append("Missing workflow name")
+            add_error("Missing workflow name", code="missing_name")
         
         if "nodes" not in compiled:
-            errors.append("Missing nodes array")
+            add_error("Missing nodes array", code="missing_nodes")
         elif not compiled["nodes"]:
-            errors.append("Workflow has no nodes")
+            add_error("Workflow has no nodes", code="empty_nodes")
         
         if "connections" not in compiled:
-            errors.append("Missing connections object")
+            add_error("Missing connections object", code="missing_connections")
         
         # Validate each node
         node_names = set()
         for node in compiled.get("nodes", []):
             if "id" not in node:
-                errors.append(f"Node missing id: {node.get('name', 'unknown')}")
+                add_error(
+                    "Node missing id",
+                    node_name=node.get("name"),
+                    node_type=node.get("type"),
+                    code="node_missing_id",
+                )
             if "name" not in node:
-                errors.append(f"Node missing name: {node.get('id', 'unknown')}")
+                add_error(
+                    "Node missing name",
+                    node_name=node.get("id"),
+                    node_type=node.get("type"),
+                    code="node_missing_name",
+                )
             elif node["name"] in node_names:
-                errors.append(f"Duplicate node name: {node['name']}")
+                add_error(
+                    f"Duplicate node name: {node['name']}",
+                    node_name=node["name"],
+                    node_type=node.get("type"),
+                    code="duplicate_node_name",
+                )
             else:
                 node_names.add(node["name"])
             if "type" not in node:
-                errors.append(f"Node missing type: {node.get('name', 'unknown')}")
+                add_error(
+                    "Node missing type",
+                    node_name=node.get("name"),
+                    code="node_missing_type",
+                )
             if "position" not in node:
-                errors.append(f"Node missing position: {node.get('name', 'unknown')}")
+                add_error(
+                    "Node missing position",
+                    node_name=node.get("name"),
+                    node_type=node.get("type"),
+                    code="node_missing_position",
+                )
+
+            node_type = node.get("type")
+            node_name = node.get("name")
+            params = node.get("parameters", {})
+            node_def = get_node_definition(node_type) if node_type else None
+
+            # Required params check
+            if node_def:
+                for param in node_def.parameters:
+                    if param.required and param.name not in params:
+                        add_error(
+                            f"Missing required parameter '{param.name}'",
+                            node_name=node_name,
+                            node_type=node_type,
+                            path=f"parameters.{param.name}",
+                            code="missing_required_param",
+                        )
+
+            # Switch rules must exist
+            if node_type == "n8n-nodes-base.switch":
+                rules = params.get("rules")
+                if not rules or not isinstance(rules, dict) or not rules.get("rules"):
+                    add_error(
+                        "Switch node has no rules",
+                        node_name=node_name,
+                        node_type=node_type,
+                        path="parameters.rules",
+                        code="switch_missing_rules",
+                    )
+                if node_def and node.get("typeVersion", 0) < node_def.type_version:
+                    add_error(
+                        "Switch node typeVersion is outdated",
+                        node_name=node_name,
+                        node_type=node_type,
+                        path="typeVersion",
+                        code="switch_version_mismatch",
+                    )
+
+            # Merge params vs version
+            if node_type == "n8n-nodes-base.merge":
+                if "combinationMode" in params and node.get("typeVersion", 0) < 3:
+                    add_error(
+                        "Merge node uses combinationMode but typeVersion < 3",
+                        node_name=node_name,
+                        node_type=node_type,
+                        path="parameters.combinationMode",
+                        code="merge_version_mismatch",
+                    )
+
+            # Malformed expressions
+            for path in self._find_invalid_expression_paths(params):
+                add_error(
+                    "Malformed expression syntax",
+                    node_name=node_name,
+                    node_type=node_type,
+                    path=".".join(["parameters"] + path),
+                    code="bad_expression",
+                )
         
         # Validate connections reference existing nodes
         for source_name, outputs in compiled.get("connections", {}).items():
             if source_name not in node_names:
-                errors.append(f"Connection source not found: {source_name}")
+                add_error(
+                    f"Connection source not found: {source_name}",
+                    node_name=source_name,
+                    code="connection_source_missing",
+                )
             
             for output_connections in outputs.get("main", []):
                 for conn in output_connections:
                     if conn.get("node") not in node_names:
-                        errors.append(
-                            f"Connection target not found: {conn.get('node')}"
+                        add_error(
+                            f"Connection target not found: {conn.get('node')}",
+                            node_name=source_name,
+                            code="connection_target_missing",
+                        )
+                    if conn.get("node") == source_name:
+                        add_error(
+                            "Self-loop connection detected",
+                            node_name=source_name,
+                            code="self_loop_connection",
                         )
         
         return errors
+
+    def validate_and_fix_compiled(
+        self,
+        compiled: dict,
+        max_attempts: int = 3,
+    ) -> tuple[dict, list[dict], bool]:
+        current = compiled
+        auto_fixed = False
+
+        for _ in range(max_attempts):
+            errors = self.validate_compiled_detailed(current)
+            if not [e for e in errors if e.get("severity") == "error"]:
+                return current, [], auto_fixed
+            fixed = self.auto_fix_compiled_json(current)
+            if fixed == current:
+                return current, errors, auto_fixed
+            current = fixed
+            auto_fixed = True
+
+        return current, errors, auto_fixed
+
+    def auto_fix_compiled_json(self, compiled: dict) -> dict:
+        fixed = copy.deepcopy(compiled)
+
+        for node in fixed.get("nodes", []):
+            node_name = node.get("name", "unknown_node")
+            params = node.get("parameters", {})
+            node["parameters"] = self._sanitize_parameters(params, path=[node_name])
+
+            node_type = node.get("type")
+            node_def = get_node_definition(node_type) if node_type else None
+
+            if node_type == "n8n-nodes-base.switch":
+                if node_def:
+                    node["typeVersion"] = node_def.type_version
+                rules = node["parameters"].get("rules")
+                if not rules or not isinstance(rules, dict) or not rules.get("rules"):
+                    node["parameters"]["rules"] = self._build_switch_rules([])
+
+            if node_type == "n8n-nodes-base.merge":
+                if "combinationMode" in node["parameters"] and node_def:
+                    node["typeVersion"] = node_def.type_version
+
+        connections = fixed.get("connections", {})
+        for source_name, outputs in connections.items():
+            main_outputs = outputs.get("main", [])
+            new_outputs = []
+            for output in main_outputs:
+                filtered = [conn for conn in output if conn.get("node") != source_name]
+                if len(filtered) != len(output):
+                    logger.warning(
+                        "dropping_self_loop_connection",
+                        node_name=source_name,
+                    )
+                new_outputs.append(filtered)
+            outputs["main"] = new_outputs
+
+        return fixed
+
+    def _find_invalid_expression_paths(self, params: Any, path: Optional[list[str]] = None) -> list[list[str]]:
+        if path is None:
+            path = []
+        matches: list[list[str]] = []
+        if isinstance(params, dict):
+            for key, value in params.items():
+                next_path = path + [key]
+                if isinstance(value, str) and value.strip().startswith("={") and not value.strip().startswith("={{"):
+                    matches.append(next_path)
+                matches.extend(self._find_invalid_expression_paths(value, next_path))
+        elif isinstance(params, list):
+            for idx, item in enumerate(params):
+                matches.extend(self._find_invalid_expression_paths(item, path + [f"[{idx}]"]))
+        return matches
     
     @staticmethod
     def extract_webhook_path(compiled_workflow: dict) -> Optional[str]:

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from app.n8n.client import N8NClient, N8NClientError
+from app.n8n.compiler import N8NCompiler
 
 logger = structlog.get_logger()
 
@@ -105,6 +106,25 @@ async def push_to_n8n(request: PushToN8NRequest) -> PushToN8NResponse:
         if request.workflow_name:
             workflow_json["name"] = request.workflow_name
         
+        # Validate and auto-fix before push
+        compiler = N8NCompiler()
+        fixed_json, validation_errors, auto_fixed = compiler.validate_and_fix_compiled(workflow_json)
+        if validation_errors:
+            logger.warning(
+                "n8n_push_validation_failed",
+                error_count=len(validation_errors),
+                auto_fixed=auto_fixed,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Workflow JSON failed validation before push",
+                    "validation_errors": validation_errors,
+                },
+            )
+        if auto_fixed:
+            workflow_json = fixed_json
+        
         # Create the workflow
         result = await client.create_workflow(workflow_json)
         
@@ -194,6 +214,26 @@ async def update_workflow(workflow_id: str, request: UpdateWorkflowRequest) -> U
         for field in read_only_fields:
             workflow_json.pop(field, None)
         
+        # Validate and auto-fix before update
+        compiler = N8NCompiler()
+        fixed_json, validation_errors, auto_fixed = compiler.validate_and_fix_compiled(workflow_json)
+        if validation_errors:
+            logger.warning(
+                "n8n_update_validation_failed",
+                workflow_id=workflow_id,
+                error_count=len(validation_errors),
+                auto_fixed=auto_fixed,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "Workflow JSON failed validation before update",
+                    "validation_errors": validation_errors,
+                },
+            )
+        if auto_fixed:
+            workflow_json = fixed_json
+        
         # Update the workflow
         result = await client.update_workflow(workflow_id, workflow_json)
         
@@ -245,6 +285,8 @@ class CompileIRResponse(BaseModel):
     success: bool
     workflow_json: Optional[dict] = None
     message: str
+    validation_errors: list[dict] = []
+    auto_fixed: bool = False
 
 
 @router.post("/n8n/compile", response_model=CompileIRResponse)
@@ -267,13 +309,30 @@ async def compile_workflow_ir(request: CompileIRRequest) -> CompileIRResponse:
         # Create compiler and compile
         compiler = N8NCompiler(route_apis_through_perseus=request.route_apis_through_perseus)
         n8n_json = compiler.compile(workflow_ir)
+        fixed_json, validation_errors, auto_fixed = compiler.validate_and_fix_compiled(n8n_json)
         
-        logger.info("workflow_ir_compiled", workflow_name=workflow_ir.name)
+        logger.info(
+            "workflow_ir_compiled",
+            workflow_name=workflow_ir.name,
+            auto_fixed=auto_fixed,
+            validation_error_count=len(validation_errors),
+        )
+        
+        if validation_errors:
+            return CompileIRResponse(
+                success=False,
+                workflow_json=None,
+                message="WorkflowIR compiled but failed validation",
+                validation_errors=validation_errors,
+                auto_fixed=auto_fixed,
+            )
         
         return CompileIRResponse(
             success=True,
-            workflow_json=n8n_json,
-            message="WorkflowIR compiled to n8n format successfully"
+            workflow_json=fixed_json,
+            message="WorkflowIR compiled to n8n format successfully",
+            validation_errors=[],
+            auto_fixed=auto_fixed,
         )
         
     except Exception as e:

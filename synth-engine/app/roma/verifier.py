@@ -133,9 +133,17 @@ class Verifier:
         
         # Step 2: Compile to n8n JSON
         try:
-            result.n8n_json = self.compiler.compile(workflow_ir)
-            result.compilation_errors = self.compiler.validate_compiled(result.n8n_json)
+            compiled = self.compiler.compile(workflow_ir)
+            fixed_json, validation_errors, auto_fixed = self.compiler.validate_and_fix_compiled(compiled)
+            result.n8n_json = fixed_json
+            result.compilation_errors = [
+                e.get("message", "Validation error")
+                for e in validation_errors
+                if e.get("severity") == "error"
+            ]
             result.compilation_valid = len(result.compilation_errors) == 0
+            if auto_fixed:
+                logger.info("verifier_auto_fixed_compilation", error_count=len(validation_errors))
         except Exception as e:
             result.compilation_errors = [str(e)]
             result.compilation_valid = False

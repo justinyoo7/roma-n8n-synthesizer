@@ -83,6 +83,8 @@ class SynthesizeResponse(BaseModel):
     webhook_path: Optional[str] = None  # Just the webhook path
     success: bool = True
     stop_reason: Optional[str] = None
+    validation_errors: Optional[list[dict]] = None
+    auto_fixed: bool = False
 
 
 @router.post("/synthesize", response_model=SynthesizeResponse)
@@ -207,14 +209,30 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                     webhook_url = f"{base_webhook_url}/webhook/{webhook_path}"
             
             # Auto-push to n8n and activate for immediate testing
+            validation_errors = []
+            auto_fixed = False
             if result.n8n_json:
                 try:
                     from app.n8n.client import N8NClient
                     from app.config import get_settings
+                    from app.n8n.compiler import N8NCompiler
                     settings = get_settings()
                     
+                    compiler = N8NCompiler()
+                    fixed_json, validation_errors, auto_fixed = compiler.validate_and_fix_compiled(result.n8n_json)
+                    if validation_errors:
+                        logger.warning(
+                            "n8n_pre_push_validation_failed",
+                            error_count=len(validation_errors),
+                            auto_fixed=auto_fixed,
+                        )
+                    else:
+                        result.n8n_json = fixed_json
+                    
                     client = N8NClient()
-                    push_result = await client.create_workflow(result.n8n_json)
+                    push_result = {}
+                    if not validation_errors:
+                        push_result = await client.create_workflow(result.n8n_json)
                     n8n_workflow_id = push_result.get("id")
                     
                     if n8n_workflow_id:
@@ -252,6 +270,9 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                 webhook_path=webhook_path,
                 n8n_workflow_id=n8n_workflow_id,
                 n8n_workflow_url=n8n_workflow_url,
+                validation_errors=validation_errors or None,
+                auto_fixed=auto_fixed,
+                success=False if validation_errors else True,
             )
         
     except Exception as e:
