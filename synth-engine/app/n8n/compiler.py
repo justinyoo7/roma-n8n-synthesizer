@@ -125,7 +125,7 @@ class N8NCompiler:
         # Force specific versions for certain node types
         if step.n8n_node_type == "n8n-nodes-base.itemLists":
             type_version = 3  # Use v3 for better split functionality
-        elif step.n8n_node_type == "n8n-nodes-base.switch" and node_def:
+        elif step.n8n_node_type in ("n8n-nodes-base.switch", "n8n-nodes-base.merge") and node_def:
             type_version = node_def.type_version
         
         # Handle agent steps - compile to HTTP Request to agent-runner
@@ -328,9 +328,30 @@ class N8NCompiler:
                     path=".".join(path),
                 )
                 continue
-            sanitized[normalized_key] = self._sanitize_parameters(value, path=path + [normalized_key])
+            normalized_value = self._sanitize_parameters(value, path=path + [normalized_key])
+            if normalized_key == "leftValue" and isinstance(normalized_value, str):
+                fixed_value = self._normalize_expression(normalized_value)
+                if fixed_value != normalized_value:
+                    logger.warning(
+                        "n8n_expression_normalized",
+                        path=".".join(path + [normalized_key]),
+                        before=normalized_value,
+                        after=fixed_value,
+                    )
+                normalized_value = fixed_value
+            sanitized[normalized_key] = normalized_value
 
         return sanitized
+
+    def _normalize_expression(self, value: str) -> str:
+        """Normalize malformed n8n expressions (e.g., '={ ... }')."""
+        trimmed = value.strip()
+        if trimmed.startswith("={{"):
+            return trimmed
+        if trimmed.startswith("={"):
+            inner = trimmed[2:-1].strip() if trimmed.endswith("}") else trimmed[2:].strip()
+            return f"={{ {inner} }}"
+        return value
     
     def _fix_set_node_params(self, params: dict) -> dict:
         """Fix Set node parameters to use the correct n8n v1 format.
@@ -877,6 +898,13 @@ class N8NCompiler:
             for edge in edges:
                 target_step = ir.get_step_by_id(edge.target_id)
                 if not target_step:
+                    continue
+                if edge.source_id == edge.target_id:
+                    logger.warning(
+                        "dropping_self_loop_edge",
+                        step_id=edge.source_id,
+                        edge_id=edge.id,
+                    )
                     continue
                 
                 # Determine output index from condition or source_output
