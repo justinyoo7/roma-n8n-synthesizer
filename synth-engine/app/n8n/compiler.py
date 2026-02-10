@@ -125,6 +125,8 @@ class N8NCompiler:
         # Force specific versions for certain node types
         if step.n8n_node_type == "n8n-nodes-base.itemLists":
             type_version = 3  # Use v3 for better split functionality
+        elif step.n8n_node_type == "n8n-nodes-base.switch" and node_def:
+            type_version = node_def.type_version
         
         # Handle agent steps - compile to HTTP Request to agent-runner
         if step.type == StepType.AGENT and step.agent:
@@ -757,7 +759,18 @@ class N8NCompiler:
         """Build n8n switch rules from branch conditions."""
         
         rules = {"rules": []}
-        
+
+        if not conditions:
+            # Provide a minimal valid rule to avoid invalid node params
+            conditions = [
+                {
+                    "field": "branch_key",
+                    "value": "default",
+                    "operation": "equals",
+                    "output": "output0",
+                }
+            ]
+
         for i, condition in enumerate(conditions):
             field = condition.get("field", "category")
             left_value = self._build_left_value(field)
@@ -795,6 +808,11 @@ class N8NCompiler:
             return "={{ $json.category }}"
         if isinstance(field, str) and field.strip().startswith("={{"):
             return field
+        if isinstance(field, str) and field.strip().startswith("={"):
+            # Normalize malformed expression syntax
+            cleaned = field.strip()
+            inner = cleaned[2:-1].strip() if cleaned.endswith("}") else cleaned[2:].strip()
+            return f"={{ {inner} }}"
         safe_field = field.strip()
         if safe_field.isidentifier():
             return f"={{ $json.{safe_field} }}"
