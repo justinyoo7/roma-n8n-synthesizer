@@ -214,7 +214,7 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
             push_error: Optional[str] = None
             if result.n8n_json:
                 try:
-                    from app.n8n.client import N8NClient
+                    from app.n8n.client import N8NClient, N8NClientError
                     from app.config import get_settings
                     from app.n8n.compiler import N8NCompiler
                     settings = get_settings()
@@ -237,8 +237,14 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                     n8n_workflow_id = push_result.get("id")
                     
                     if n8n_workflow_id:
-                        # Verify workflow exists before returning ID/URL
-                        await client.get_workflow(n8n_workflow_id)
+                        # Verify workflow exists and contains nodes before returning ID/URL
+                        created_workflow = await client.get_workflow(n8n_workflow_id)
+                        created_nodes = created_workflow.get("nodes") or []
+                        if not created_nodes:
+                            raise N8NClientError(
+                                "Created workflow has no nodes",
+                                response_body={"workflow_id": n8n_workflow_id},
+                            )
 
                         # Activate the workflow for immediate use
                         try:
@@ -271,6 +277,10 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                     logger.warning("n8n_push_failed", error=str(e))
                     push_error = f"Failed to push to n8n: {str(e)}"
             
+            if push_error:
+                n8n_workflow_id = None
+                n8n_workflow_url = None
+
             return SynthesizeResponse(
                 workflow_id=result.workflow_id,
                 iteration_id=result.iteration_id,

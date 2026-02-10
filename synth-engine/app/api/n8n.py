@@ -236,6 +236,13 @@ async def update_workflow(workflow_id: str, request: UpdateWorkflowRequest) -> U
         
         # Update the workflow
         result = await client.update_workflow(workflow_id, workflow_json)
+        updated_nodes = result.get("nodes") or []
+        if not updated_nodes:
+            logger.error("n8n_update_empty_nodes", workflow_id=workflow_id)
+            raise HTTPException(
+                status_code=500,
+                detail="Updated workflow has no nodes. Check compilation output.",
+            )
         
         updated_workflow_id = result.get("id")
         logger.info("workflow_updated_in_n8n", n8n_workflow_id=updated_workflow_id)
