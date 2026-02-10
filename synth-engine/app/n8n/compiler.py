@@ -201,8 +201,7 @@ class N8NCompiler:
         
         elif step.n8n_node_type == "n8n-nodes-base.switch":
             # Build switch rules from branch conditions
-            if step.branch_conditions:
-                params["rules"] = self._build_switch_rules(step.branch_conditions)
+            params["rules"] = self._build_switch_rules(step.branch_conditions or [])
             params.setdefault("mode", "rules")
         
         elif step.n8n_node_type == "n8n-nodes-base.if":
@@ -720,6 +719,8 @@ class N8NCompiler:
         rules = {"rules": []}
         
         for i, condition in enumerate(conditions):
+            field = condition.get("field", "category")
+            left_value = self._build_left_value(field)
             rule = {
                 "outputKey": condition.get("output", f"output{i}"),
                 "conditions": {
@@ -730,7 +731,7 @@ class N8NCompiler:
                     },
                     "conditions": [
                         {
-                            "leftValue": condition.get("field", "={{ $json.category }}"),
+                            "leftValue": left_value,
                             "rightValue": condition.get("value", ""),
                             "operator": {
                                 "type": "string",
@@ -747,6 +748,17 @@ class N8NCompiler:
         rules["fallbackOutput"] = "extra"
         
         return rules
+
+    def _build_left_value(self, field: str) -> str:
+        """Ensure switch rules reference $json correctly."""
+        if not field:
+            return "={{ $json.category }}"
+        if isinstance(field, str) and field.strip().startswith("={{"):
+            return field
+        safe_field = field.strip()
+        if safe_field.isidentifier():
+            return f"={{ $json.{safe_field} }}"
+        return f"={{ $json[\"{safe_field}\"] }}"
     
     def _build_if_conditions(self, condition: dict) -> dict:
         """Build n8n IF conditions from a single condition."""
