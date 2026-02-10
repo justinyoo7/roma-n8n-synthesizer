@@ -205,8 +205,9 @@ class N8NCompiler:
         
         elif step.n8n_node_type == "n8n-nodes-base.switch":
             # Build switch rules from branch conditions
+            params = {key: value for key, value in params.items() if key not in {"mode", "outputIndex", "expression"}}
             params["rules"] = self._build_switch_rules(step.branch_conditions or [])
-            params.setdefault("mode", "rules")
+            params["mode"] = "rules"
         
         elif step.n8n_node_type == "n8n-nodes-base.if":
             # Build IF conditions
@@ -1084,6 +1085,14 @@ class N8NCompiler:
                         path="parameters.rules",
                         code="switch_missing_rules",
                     )
+                if params.get("mode") == "expression":
+                    add_error(
+                        "Switch node uses expression mode",
+                        node_name=node_name,
+                        node_type=node_type,
+                        path="parameters.mode",
+                        code="switch_expression_mode",
+                    )
                 if node_def and node.get("typeVersion", 0) < node_def.type_version:
                     add_error(
                         "Switch node typeVersion is outdated",
@@ -1174,6 +1183,9 @@ class N8NCompiler:
             if node_type == "n8n-nodes-base.switch":
                 if node_def:
                     node["typeVersion"] = node_def.type_version
+                node["parameters"].pop("outputIndex", None)
+                node["parameters"].pop("expression", None)
+                node["parameters"]["mode"] = "rules"
                 rules = node["parameters"].get("rules")
                 if not rules or not isinstance(rules, dict) or not rules.get("rules"):
                     node["parameters"]["rules"] = self._build_switch_rules([])
