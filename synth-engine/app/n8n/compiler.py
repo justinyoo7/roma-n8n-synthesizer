@@ -253,9 +253,9 @@ class N8NCompiler:
             # No Operation - pass through
             params = {}
         
-        return self._sanitize_parameters(params)
+        return self._sanitize_parameters(params, path=[step.name])
 
-    def _sanitize_parameters(self, params: Any) -> Any:
+    def _sanitize_parameters(self, params: Any, path: list[str]) -> Any:
         """Normalize common param mistakes from LLM outputs.
 
         n8n does not recognize a top-level 'option' key (expects 'options').
@@ -263,7 +263,7 @@ class N8NCompiler:
         structures to prevent n8n editor load errors.
         """
         if isinstance(params, list):
-            return [self._sanitize_parameters(item) for item in params]
+            return [self._sanitize_parameters(item, path=path + [f"[{idx}]"]) for idx, item in enumerate(params)]
         if not isinstance(params, dict):
             return params
 
@@ -272,10 +272,22 @@ class N8NCompiler:
         for key, value in params.items():
             normalized_key = key
             if key == "option" and not has_options:
+                logger.warning(
+                    "n8n_parameter_key_renamed",
+                    from_key="option",
+                    to_key="options",
+                    path=".".join(path),
+                )
                 normalized_key = "options"
             if key == "option" and has_options:
+                logger.warning(
+                    "n8n_parameter_key_dropped",
+                    key="option",
+                    reason="options already present",
+                    path=".".join(path),
+                )
                 continue
-            sanitized[normalized_key] = self._sanitize_parameters(value)
+            sanitized[normalized_key] = self._sanitize_parameters(value, path=path + [normalized_key])
 
         return sanitized
     
