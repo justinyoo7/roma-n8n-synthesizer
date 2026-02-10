@@ -277,6 +277,14 @@ class Atomizer:
         )
         
         analysis = response.content
+        prompt_lower = prompt.lower()
+        branching_keywords = [
+            "branch", "branches", "branching", "if/else", "if else", "path", "paths",
+            "reply", "replies", "no-reply", "no reply", "no-response", "no response",
+            "objection", "follow-up", "follow up", "sequence",
+        ]
+        requires_branching = any(k in prompt_lower for k in branching_keywords)
+        analysis["has_branching"] = analysis.get("has_branching") or requires_branching
         is_atomic = analysis.get("complexity") == "atomic" and not analysis.get("has_branching")
         
         logger.info(
