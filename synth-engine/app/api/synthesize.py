@@ -237,13 +237,12 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                     n8n_workflow_id = push_result.get("id")
                     
                     if n8n_workflow_id:
-                        # Verify workflow exists and contains nodes before returning ID/URL
-                        created_workflow = await client.get_workflow(n8n_workflow_id)
-                        created_nodes = created_workflow.get("nodes") or []
-                        if not created_nodes:
+                        # Verify workflow exists and is valid before returning ID/URL
+                        verification = await client.verify_workflow(n8n_workflow_id)
+                        if not verification.get("valid"):
                             raise N8NClientError(
-                                "Created workflow has no nodes",
-                                response_body={"workflow_id": n8n_workflow_id},
+                                "Created workflow failed verification",
+                                response_body=verification,
                             )
 
                         # Activate the workflow for immediate use

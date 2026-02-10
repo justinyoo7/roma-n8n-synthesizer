@@ -181,6 +181,7 @@ class UpdateWorkflowResponse(BaseModel):
     success: bool
     n8n_workflow_id: str
     n8n_workflow_url: str
+    webhook_url: Optional[str] = None
     message: str
 
 
@@ -236,25 +237,37 @@ async def update_workflow(workflow_id: str, request: UpdateWorkflowRequest) -> U
         
         # Update the workflow
         result = await client.update_workflow(workflow_id, workflow_json)
-        updated_nodes = result.get("nodes") or []
-        if not updated_nodes:
-            logger.error("n8n_update_empty_nodes", workflow_id=workflow_id)
+        verification = await client.verify_workflow(workflow_id)
+        if not verification.get("valid"):
+            logger.error(
+                "n8n_update_verification_failed",
+                workflow_id=workflow_id,
+                issues=verification.get("issues"),
+            )
             raise HTTPException(
                 status_code=500,
-                detail="Updated workflow has no nodes. Check compilation output.",
+                detail={
+                    "message": "Updated workflow failed verification",
+                    "n8n_error": verification,
+                },
             )
         
         updated_workflow_id = result.get("id")
         logger.info("workflow_updated_in_n8n", n8n_workflow_id=updated_workflow_id)
         
-        # Build the workflow URL
+        # Build the workflow and webhook URLs
         base_url = settings.n8n_base_url.replace("/api/v1", "")
         workflow_url = f"{base_url}/workflow/{updated_workflow_id}"
+        webhook_url: Optional[str] = None
+        webhook_path = N8NCompiler.extract_webhook_path(workflow_json)
+        if webhook_path:
+            webhook_url = f"{base_url}/webhook/{webhook_path}"
         
         return UpdateWorkflowResponse(
             success=True,
             n8n_workflow_id=updated_workflow_id,
             n8n_workflow_url=workflow_url,
+            webhook_url=webhook_url,
             message=f"Workflow updated successfully in n8n"
         )
         
