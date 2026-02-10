@@ -424,6 +424,10 @@ BRANCHING REQUIREMENTS (only when explicitly required by the prompt):
 - Include branch_conditions matching the prompt (e.g., responded, no_response, objection).
 - Ensure edges fan out from branch nodes to distinct messaging/follow-up steps.
 
+LOOP REQUIREMENTS (only when explicitly required by the prompt):
+- If the prompt explicitly asks to iterate over a list (e.g., “for each prospect”, “loop”, “batch processing”),
+  include a loop/split step (step_type: "action", n8n_node_type: "n8n-nodes-base.itemLists").
+
 NEVER configure direct calls to api.openai.com or api.anthropic.com.
 All AI functionality must use step_type: "agent".
 

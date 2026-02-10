@@ -81,8 +81,14 @@ class Aggregator:
         # Fix branching topology (LLM often gets this wrong)
         edges = self._fix_branching_topology(trigger, steps, edges)
         
-        # Enforce messaging branching requirements if needed
-        steps, edges = self._enforce_messaging_branching(prompt, trigger, steps, edges)
+        # Detect prompt requirements and enforce if explicitly required
+        requirements = self._detect_prompt_requirements(prompt)
+        steps, edges, branching_enforced = self._enforce_messaging_branching(
+            requirements,
+            trigger,
+            steps,
+            edges,
+        )
         
         # Ensure all steps are reachable - fix missing edges
         edges = self._ensure_reachability(trigger, steps, edges)
@@ -112,6 +118,9 @@ class Aggregator:
                 "artifact_count": len(tree.get_all_artifacts()),
                 "branching_enforcer_version": "v1",
                 "build_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+                "required_branching": requirements["required_branching"],
+                "required_looping": requirements["required_looping"],
+                "branching_enforced": branching_enforced,
             },
         )
         
@@ -531,22 +540,60 @@ class Aggregator:
         
         return fixed_edges
 
-    def _enforce_messaging_branching(
-        self,
-        prompt: str,
-        trigger: StepSpec,
-        steps: list[StepSpec],
-        edges: list[EdgeSpec],
-    ) -> tuple[list[StepSpec], list[EdgeSpec]]:
-        """Ensure response/follow-up paths are branched, not linear."""
+    def _detect_prompt_requirements(self, prompt: str) -> dict[str, object]:
         prompt_lower = prompt.lower()
-        keywords = [
+        branching_keywords = [
             "branch", "branches", "branching", "if/else", "if else", "path", "paths",
             "reply", "replies", "no-reply", "no reply", "no-response", "no response",
             "objection", "follow-up path", "follow up path", "follow-up paths", "follow up paths",
+            "seniority", "engagement",
         ]
-        if not any(k in prompt_lower for k in keywords):
-            return steps, edges
+        loop_keywords = [
+            "loop", "iterate", "iteration", "for each", "for every", "each prospect",
+            "each item", "each record", "batch", "process list",
+        ]
+
+        response_conditions = []
+        if "reply" in prompt_lower or "replies" in prompt_lower:
+            response_conditions.append("responded")
+        if "no-reply" in prompt_lower or "no reply" in prompt_lower or "no-response" in prompt_lower or "no response" in prompt_lower:
+            response_conditions.append("no_response")
+        if "objection" in prompt_lower:
+            response_conditions.append("objection")
+
+        strategy_conditions = []
+        if "seniority" in prompt_lower:
+            strategy_conditions.append("seniority")
+        if "engagement" in prompt_lower:
+            strategy_conditions.append("engagement")
+
+        required_branching = (
+            any(k in prompt_lower for k in branching_keywords)
+            or len(response_conditions) >= 2
+            or len(strategy_conditions) >= 2
+        )
+        required_looping = any(k in prompt_lower for k in loop_keywords)
+
+        return {
+            "required_branching": required_branching,
+            "required_looping": required_looping,
+            "response_conditions": response_conditions,
+            "strategy_conditions": strategy_conditions,
+        }
+
+    def _enforce_messaging_branching(
+        self,
+        requirements: dict[str, object],
+        trigger: StepSpec,
+        steps: list[StepSpec],
+        edges: list[EdgeSpec],
+    ) -> tuple[list[StepSpec], list[EdgeSpec], bool]:
+        """Ensure response/follow-up paths are branched, not linear."""
+        if not requirements["required_branching"]:
+            return steps, edges, False
+
+        response_conditions = list(requirements.get("response_conditions", []))
+        strategy_conditions = list(requirements.get("strategy_conditions", []))
 
         def is_response_step(step: StepSpec) -> bool:
             name = step.name.lower()
@@ -571,155 +618,191 @@ class Aggregator:
 
         response_steps = [s for s in steps if is_response_step(s)]
         messaging_steps = [s for s in steps if is_messaging_step(s)]
-        if len(response_steps) < 2 and len(messaging_steps) < 2:
-            return steps, edges
 
-        # Find an existing branch node or create one
-        branch_steps = [s for s in steps if s.type == StepType.BRANCH or "branch" in s.name.lower()]
-        branch_step = branch_steps[0] if branch_steps else None
+        def apply_branch(
+            target_conditions: list[str],
+            response_mode: bool,
+        ) -> tuple[list[StepSpec], list[EdgeSpec], bool]:
+            if len(target_conditions) < 2:
+                return steps, edges, False
 
-        def create_agent_step(step_id: str, name: str, x: int, y: int) -> StepSpec:
-            agent_name = step_id
-            return StepSpec(
-                id=step_id,
-                name=name,
-                type=StepType.AGENT,
-                n8n_node_type="n8n-nodes-base.set",
-                n8n_type_version=1,
-                parameters={},
-                agent=AgentSpec(
-                    name=agent_name,
-                    role=f"{name} agent",
-                    tools_allowed=[],
-                    input_schema=DataContract(
-                        name=f"{agent_name}_input",
-                        fields=[FieldSchema(name="input", type=DataType.OBJECT)],
+            # Find an existing branch node or create one
+            branch_steps = [
+                s
+                for s in steps
+                if s.type == StepType.BRANCH
+                and (
+                    ("response" in s.name.lower() and response_mode)
+                    or ("strategy" in s.name.lower() and not response_mode)
+                )
+            ]
+            if not branch_steps:
+                branch_steps = [s for s in steps if s.type == StepType.BRANCH or "branch" in s.name.lower()]
+            branch_step = branch_steps[0] if branch_steps else None
+
+            def create_agent_step(step_id: str, name: str, x: int, y: int) -> StepSpec:
+                agent_name = step_id
+                return StepSpec(
+                    id=step_id,
+                    name=name,
+                    type=StepType.AGENT,
+                    n8n_node_type="n8n-nodes-base.set",
+                    n8n_type_version=1,
+                    parameters={},
+                    agent=AgentSpec(
+                        name=agent_name,
+                        role=f"{name} agent",
+                        tools_allowed=[],
+                        input_schema=DataContract(
+                            name=f"{agent_name}_input",
+                            fields=[FieldSchema(name="input", type=DataType.OBJECT)],
+                        ),
+                        output_schema=DataContract(
+                            name=f"{agent_name}_output",
+                            fields=[FieldSchema(name="output", type=DataType.OBJECT)],
+                        ),
                     ),
-                    output_schema=DataContract(
-                        name=f"{agent_name}_output",
-                        fields=[FieldSchema(name="output", type=DataType.OBJECT)],
-                    ),
-                ),
-                position=Position(x=x, y=y),
-            )
+                    position=Position(x=x, y=y),
+                )
 
-        if not branch_step:
-            branch_id_base = "messaging_branch"
-            branch_id = branch_id_base
-            existing_ids = {s.id for s in steps}
-            if branch_id in existing_ids:
-                branch_id = f"{branch_id_base}_{uuid4().hex[:6]}"
+            if not branch_step:
+                branch_id_base = "messaging_branch"
+                branch_id = branch_id_base
+                existing_ids = {s.id for s in steps}
+                if branch_id in existing_ids:
+                    branch_id = f"{branch_id_base}_{uuid4().hex[:6]}"
 
-            # Prefer placing branch after a strategy/segmentation step if present
-            strategy_idx = next(
-                (i for i, s in enumerate(steps) if "strategy" in s.name.lower()),
+                # Prefer placing branch before first messaging step if present
+                messaging_idx = next(
+                    (i for i, s in enumerate(steps) if is_messaging_step(s)),
+                    None,
+                )
+                insert_idx = messaging_idx if messaging_idx is not None else len(steps)
+                successor = steps[insert_idx] if insert_idx < len(steps) else None
+                reference_position = None
+                if steps:
+                    if insert_idx < len(steps):
+                        reference_position = steps[insert_idx].position
+                    else:
+                        reference_position = steps[-1].position
+                else:
+                    reference_position = Position(x=0, y=0)
+
+                branch_step = StepSpec(
+                    id=branch_id,
+                    name="Response Branch" if response_mode else "Strategy Branch",
+                    type=StepType.BRANCH,
+                    n8n_node_type="n8n-nodes-base.switch",
+                    n8n_type_version=1,
+                    parameters={},
+                    branch_conditions=[
+                        {"name": condition, "field": "branch_key", "value": condition, "operation": "equals"}
+                        for condition in target_conditions
+                    ],
+                    position=Position(x=reference_position.x - 200, y=reference_position.y),
+                )
+
+                steps[:] = steps[:insert_idx] + [branch_step] + steps[insert_idx:]
+            else:
+                successor = None
+
+            if not branch_step.branch_conditions:
+                branch_step.branch_conditions = [
+                    {"name": condition, "field": "branch_key", "value": condition, "operation": "equals"}
+                    for condition in target_conditions
+                ]
+
+            path_steps = [s for s in steps if is_response_step(s)] if response_mode else [s for s in steps if is_messaging_step(s)]
+            if len(path_steps) < 2:
+                existing_ids = {s.id for s in steps}
+                base_x = branch_step.position.x + 250
+                base_y = branch_step.position.y - 120
+                label_map = {
+                    "responded": "Handle Replies",
+                    "no_response": "Handle No Response",
+                    "objection": "Handle Objections",
+                    "seniority": "Draft Seniority Messaging",
+                    "engagement": "Draft Engagement Messaging",
+                }
+                for idx, condition in enumerate(target_conditions):
+                    step_id = f"{condition}_path"
+                    name = label_map.get(condition, f"Handle {condition.replace('_', ' ').title()}")
+                    new_id = step_id
+                    if new_id in existing_ids:
+                        new_id = f"{step_id}_{uuid4().hex[:6]}"
+                    path_steps.append(create_agent_step(new_id, name, base_x, base_y + idx * 140))
+                    existing_ids.add(new_id)
+                steps.extend(path_steps[-len(target_conditions):])
+
+            # Determine predecessor and successor for branching
+            predecessor = next(
+                (s for s in steps if s.id != branch_step.id and s.position.x < branch_step.position.x),
                 None,
             )
-            insert_idx = strategy_idx + 1 if strategy_idx is not None else max(0, min(len(steps), len(steps)))
-            branch_step = StepSpec(
-                id=branch_id,
-                name="Messaging Branch",
-                type=StepType.BRANCH,
-                n8n_node_type="n8n-nodes-base.switch",
-                n8n_type_version=1,
-                parameters={},
-                branch_conditions=[
-                    {"name": "responded", "field": "branch_key", "value": "responded", "operation": "equals"},
-                    {"name": "no_response", "field": "branch_key", "value": "no_response", "operation": "equals"},
-                    {"name": "objection", "field": "branch_key", "value": "objection", "operation": "equals"},
-                ],
-                position=Position(x=steps[insert_idx].position.x - 200, y=steps[insert_idx].position.y),
-            )
+            if successor is None:
+                for step in steps:
+                    if step.id == branch_step.id:
+                        continue
+                    if step.position.x > branch_step.position.x and not is_response_step(step):
+                        successor = step
+                        break
 
-            steps = steps[:insert_idx] + [branch_step] + steps[insert_idx:]
-
-        if not branch_step.branch_conditions:
-            branch_step.branch_conditions = [
-                {"name": "responded", "field": "branch_key", "value": "responded", "operation": "equals"},
-                {"name": "no_response", "field": "branch_key", "value": "no_response", "operation": "equals"},
-                {"name": "objection", "field": "branch_key", "value": "objection", "operation": "equals"},
-            ]
-
-        # Ensure we have explicit response path steps
-        response_steps = [s for s in steps if is_response_step(s)]
-        if len(response_steps) < 2:
-            existing_ids = {s.id for s in steps}
-            base_x = branch_step.position.x + 250
-            base_y = branch_step.position.y - 120
-            defaults = [
-                ("responded_path", "Handle Replies"),
-                ("no_response_path", "Handle No Response Follow-up"),
-                ("objection_path", "Handle Objections"),
-            ]
-            for idx, (step_id, name) in enumerate(defaults):
-                new_id = step_id
-                if new_id in existing_ids:
-                    new_id = f"{step_id}_{uuid4().hex[:6]}"
-                response_steps.append(
-                    create_agent_step(new_id, name, base_x, base_y + idx * 140)
-                )
-                existing_ids.add(new_id)
-            steps.extend(response_steps[-3:])
-
-        # Determine predecessor and successor for branching
-        predecessor = next(
-            (s for s in steps if s.id != branch_step.id and s.position.x < branch_step.position.x),
-            None,
-        )
-        successor = None
-        for step in steps:
-            if step.id == branch_step.id:
-                continue
-            if step.position.x > branch_step.position.x and not is_response_step(step):
-                successor = step
-                break
-
-        response_ids = {s.id for s in response_steps}
-        filtered_edges = [
-            e
-            for e in edges
-            if e.source_id not in response_ids and e.target_id not in response_ids and e.source_id != branch_step.id
-        ]
-
-        # Connect predecessor to branch
-        if predecessor:
+            path_ids = {s.id for s in path_steps}
             filtered_edges = [
-                e for e in filtered_edges if not (e.source_id == predecessor.id and e.target_id == branch_step.id)
+                e
+                for e in edges
+                if e.source_id not in path_ids and e.target_id not in path_ids and e.source_id != branch_step.id
             ]
-            filtered_edges.append(EdgeSpec(source_id=predecessor.id, target_id=branch_step.id))
-        else:
-            filtered_edges.append(EdgeSpec(source_id=trigger.id, target_id=branch_step.id))
 
-        # Branch to response steps
-        condition_order = ["responded", "no_response", "objection"]
-        for i, step in enumerate(response_steps):
-            name_lower = step.name.lower()
-            if "objection" in name_lower:
-                condition = "objection"
-            elif "no reply" in name_lower or "no-reply" in name_lower or "no response" in name_lower or "no-response" in name_lower or "follow" in name_lower:
-                condition = "no_response"
-            elif "reply" in name_lower or "respond" in name_lower:
-                condition = "responded"
+            # Connect predecessor to branch
+            if predecessor:
+                filtered_edges = [
+                    e for e in filtered_edges if not (e.source_id == predecessor.id and e.target_id == branch_step.id)
+                ]
+                filtered_edges.append(EdgeSpec(source_id=predecessor.id, target_id=branch_step.id))
             else:
-                condition = condition_order[min(i, len(condition_order) - 1)]
-            filtered_edges.append(
-                EdgeSpec(
-                    source_id=branch_step.id,
-                    target_id=step.id,
-                    source_output=f"output{condition_order.index(condition)}",
-                    condition=condition,
-                )
-            )
+                filtered_edges.append(EdgeSpec(source_id=trigger.id, target_id=branch_step.id))
 
-            if successor:
+            # Branch to path steps
+            for i, step in enumerate(path_steps):
+                condition = (
+                    target_conditions[i]
+                    if i < len(target_conditions)
+                    else branch_step.branch_conditions[min(i, len(branch_step.branch_conditions) - 1)]["name"]
+                )
                 filtered_edges.append(
                     EdgeSpec(
-                        source_id=step.id,
-                        target_id=successor.id,
+                        source_id=branch_step.id,
+                        target_id=step.id,
+                        source_output=f"output{i}",
+                        condition=condition,
                     )
                 )
 
-        return steps, filtered_edges
+                if successor:
+                    filtered_edges.append(
+                        EdgeSpec(
+                            source_id=step.id,
+                            target_id=successor.id,
+                        )
+                    )
+
+            return steps, filtered_edges, True
+
+        enforced = False
+        if len(strategy_conditions) >= 2:
+            steps, edges, did_enforce = apply_branch(strategy_conditions, response_mode=False)
+            enforced = enforced or did_enforce
+
+        if len(response_conditions) >= 2:
+            steps, edges, did_enforce = apply_branch(response_conditions, response_mode=True)
+            enforced = enforced or did_enforce
+
+        if not enforced:
+            fallback_conditions = ["responded", "no_response"] if len(response_steps) >= 2 else ["option_a", "option_b"]
+            steps, edges, enforced = apply_branch(fallback_conditions, response_mode=len(response_steps) >= 2)
+
+        return steps, edges, enforced
     
     def _build_topology_aware_edges(
         self,

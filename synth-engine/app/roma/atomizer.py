@@ -281,11 +281,21 @@ class Atomizer:
         branching_keywords = [
             "branch", "branches", "branching", "if/else", "if else", "path", "paths",
             "reply", "replies", "no-reply", "no reply", "no-response", "no response",
-            "objection", "follow-up", "follow up", "sequence",
+            "objection", "follow-up", "follow up",
+        ]
+        loop_keywords = [
+            "loop", "iterate", "iteration", "for each", "for every", "each prospect",
+            "each item", "each record", "batch", "process list",
         ]
         requires_branching = any(k in prompt_lower for k in branching_keywords)
+        requires_looping = any(k in prompt_lower for k in loop_keywords)
         analysis["has_branching"] = analysis.get("has_branching") or requires_branching
-        is_atomic = analysis.get("complexity") == "atomic" and not analysis.get("has_branching")
+        analysis["has_looping"] = analysis.get("has_looping") or requires_looping
+        is_atomic = (
+            analysis.get("complexity") == "atomic"
+            and not analysis.get("has_branching")
+            and not analysis.get("has_looping")
+        )
         
         logger.info(
             "atomizer_analysis_complete",
@@ -489,6 +499,23 @@ class Atomizer:
             )
             success_criteria.append(invariant)
         
+        prompt_lower = original_prompt.lower()
+        required_branching = any(
+            k in prompt_lower
+            for k in [
+                "branch", "branches", "branching", "if/else", "if else", "path", "paths",
+                "reply", "replies", "no-reply", "no reply", "no-response", "no response",
+                "objection", "follow-up", "follow up",
+            ]
+        )
+        required_looping = any(
+            k in prompt_lower
+            for k in [
+                "loop", "iterate", "iteration", "for each", "for every", "each prospect",
+                "each item", "each record", "batch", "process list",
+            ]
+        )
+
         return WorkflowIR(
             name=data.get("name", "Generated Workflow"),
             description=data.get("description", original_prompt[:200]),
@@ -502,6 +529,8 @@ class Atomizer:
                 "integrations_used": self._extract_integrations(data),
                 "branching_enforcer_version": "v1",
                 "build_sha": os.getenv("RAILWAY_GIT_COMMIT_SHA", "unknown"),
+                "required_branching": required_branching,
+                "required_looping": required_looping,
             },
         )
     
