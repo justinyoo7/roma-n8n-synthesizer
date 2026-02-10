@@ -116,6 +116,7 @@ class N8NCompiler:
         
         # Build parameters
         parameters = self._build_parameters(step, node_def)
+        self._log_parameter_anomalies(step, node_def, parameters)
         
         # Determine node type (may be overridden for agent steps)
         node_type = step.n8n_node_type
@@ -253,6 +254,45 @@ class N8NCompiler:
             params = {}
         
         return self._sanitize_parameters(params, path=[step.name])
+
+    def _log_parameter_anomalies(self, step: StepSpec, node_def: Optional[Any], params: dict) -> None:
+        """Log suspicious parameter keys for debugging n8n import issues."""
+        # Log any "option" keys (singular) anywhere in parameters
+        for path in self._find_key_paths(params, target_key="option"):
+            logger.warning(
+                "n8n_parameter_option_found",
+                node_name=step.name,
+                node_type=step.n8n_node_type,
+                path=".".join(path),
+            )
+
+        # Log unknown top-level keys compared to catalog (best-effort)
+        if node_def and getattr(node_def, "parameters", None) is not None:
+            allowed = {p.name for p in node_def.parameters}
+            extra_keys = sorted(set(params.keys()) - allowed)
+            if extra_keys:
+                logger.warning(
+                    "n8n_parameter_unknown_keys",
+                    node_name=step.name,
+                    node_type=step.n8n_node_type,
+                    extra_keys=extra_keys,
+                    allowed=sorted(allowed),
+                )
+
+    def _find_key_paths(self, value: Any, target_key: str, path: Optional[list[str]] = None) -> list[list[str]]:
+        if path is None:
+            path = []
+        matches: list[list[str]] = []
+        if isinstance(value, dict):
+            for key, item in value.items():
+                next_path = path + [key]
+                if key == target_key:
+                    matches.append(next_path)
+                matches.extend(self._find_key_paths(item, target_key, next_path))
+        elif isinstance(value, list):
+            for idx, item in enumerate(value):
+                matches.extend(self._find_key_paths(item, target_key, path + [f"[{idx}]"]))
+        return matches
 
     def _sanitize_parameters(self, params: Any, path: list[str]) -> Any:
         """Normalize common param mistakes from LLM outputs.
