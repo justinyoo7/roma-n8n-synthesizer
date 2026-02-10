@@ -513,9 +513,18 @@ class N8NClient:
             if "position" not in node:
                 issues.append(f"Node '{node.get('name')}' missing position")
         
-        # Check for trigger node
+        # Check for trigger node (webhook/manual/schedule/app event)
+        trigger_types = {
+            "n8n-nodes-base.webhook",
+            "n8n-nodes-base.manualTrigger",
+            "n8n-nodes-base.scheduleTrigger",
+            "n8n-nodes-base.appEventTrigger",
+            "n8n-nodes-base.errorTrigger",
+        }
         has_trigger = any(
-            "trigger" in node.get("type", "").lower()
+            node.get("type") in trigger_types
+            or "trigger" in node.get("type", "").lower()
+            or "webhook" in node.get("type", "").lower()
             for node in nodes
         )
         if not has_trigger:
