@@ -226,6 +226,31 @@ class StepSpec(BaseModel):
             raise ValueError("Agent specification required for AGENT type steps")
         return v
 
+    @field_validator("branch_conditions", mode="before")
+    @classmethod
+    def normalize_branch_conditions(cls, v):
+        """Normalize branch conditions to list[dict]."""
+        if v is None:
+            return v
+        if isinstance(v, list):
+            normalized = []
+            for item in v:
+                if isinstance(item, dict):
+                    normalized.append(item)
+                    continue
+                if isinstance(item, str):
+                    normalized.append(
+                        {
+                            "name": item,
+                            "field": "branch_key",
+                            "value": item,
+                            "operation": "equals",
+                        }
+                    )
+                    continue
+            return normalized
+        return v
+
 
 class EdgeSpec(BaseModel):
     """Specification for an edge connecting two steps."""
