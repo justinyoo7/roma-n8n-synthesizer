@@ -202,6 +202,12 @@ NODE SELECTION GUIDANCE:
         """Choose and configure the workflow trigger."""
         
         prompt = context.get("prompt", "")
+        prompt_text = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_text.lower()
+        prompt_text = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_text.lower()
+        prompt_text = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_text.lower()
         workflow_id = context.get("workflow_id")
         
         response = await generate_with_logging(
@@ -300,6 +306,8 @@ Respond with JSON:
         """Define data contracts between workflow steps."""
         
         prompt = context.get("prompt", "")
+        prompt_text = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_text.lower()
         agents = context.get("agents", [])
         workflow_id = context.get("workflow_id")
         
@@ -353,6 +361,8 @@ Agents defined: {agents}""",
         """
         
         prompt = context.get("prompt", "")
+        prompt_text = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_text.lower()
         agents = context.get("agents", [])
         workflow_id = context.get("workflow_id")
         
@@ -366,7 +376,7 @@ Agents defined: {agents}""",
         ]
         
         for kw in keywords_to_check:
-            if kw.lower() in prompt.lower():
+            if kw.lower() in prompt_lower:
                 resolution = self._resolve_step_capability(kw)
                 pre_resolved[kw] = {
                     "use_native": resolution.use_native_node,

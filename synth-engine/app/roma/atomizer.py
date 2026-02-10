@@ -8,6 +8,7 @@ For atomic requests, it produces a draft WorkflowIR directly.
 For complex requests, it creates the root of a TaskTree for the Planner.
 """
 import os
+import json
 from typing import Optional
 from uuid import UUID
 
@@ -277,7 +278,8 @@ class Atomizer:
         )
         
         analysis = response.content
-        prompt_lower = prompt.lower()
+        prompt_str = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_str.lower()
         branching_keywords = [
             "branch", "branches", "branching", "if/else", "if else", "path", "paths",
             "reply", "replies", "no-reply", "no reply", "no-response", "no response",
@@ -499,7 +501,8 @@ class Atomizer:
             )
             success_criteria.append(invariant)
         
-        prompt_lower = original_prompt.lower()
+        prompt_str = original_prompt if isinstance(original_prompt, str) else json.dumps(original_prompt, default=str)
+        prompt_lower = prompt_str.lower()
         required_branching = any(
             k in prompt_lower
             for k in [

@@ -8,6 +8,7 @@ into a coherent WorkflowIR. It handles:
 4. Applying layout positions to all nodes
 """
 import os
+import json
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -541,7 +542,8 @@ class Aggregator:
         return fixed_edges
 
     def _detect_prompt_requirements(self, prompt: str) -> dict[str, object]:
-        prompt_lower = prompt.lower()
+        prompt_str = prompt if isinstance(prompt, str) else json.dumps(prompt, default=str)
+        prompt_lower = prompt_str.lower()
         branching_keywords = [
             "branch", "branches", "branching", "if/else", "if else", "path", "paths",
             "reply", "replies", "no-reply", "no reply", "no-response", "no response",
