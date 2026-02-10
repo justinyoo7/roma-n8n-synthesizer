@@ -304,6 +304,16 @@ class N8NCompiler:
         If we see 'option' and no 'options', rename it. Also sanitize nested
         structures to prevent n8n editor load errors.
         """
+        if isinstance(params, str):
+            normalized = self._normalize_expression(params)
+            if normalized != params:
+                logger.warning(
+                    "n8n_expression_normalized",
+                    path=".".join(path),
+                    before=params,
+                    after=normalized,
+                )
+            return normalized
         if isinstance(params, list):
             return [self._sanitize_parameters(item, path=path + [f"[{idx}]"]) for idx, item in enumerate(params)]
         if not isinstance(params, dict):
