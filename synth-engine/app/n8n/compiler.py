@@ -847,8 +847,8 @@ class N8NCompiler:
             return f"={{ {inner} }}"
         safe_field = field.strip()
         if safe_field.isidentifier():
-            return f"={{ $json.{safe_field} }}"
-        return f"={{ $json[\"{safe_field}\"] }}"
+            return f"={{{{ $json.{safe_field} }}}}"
+        return f"={{{{ $json[\"{safe_field}\"] }}}}"
     
     def _build_if_conditions(self, condition: dict) -> dict:
         """Build n8n IF conditions from a single condition."""
