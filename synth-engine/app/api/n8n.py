@@ -721,10 +721,25 @@ async def activate_workflow(workflow_id: str, request: ActivateRequest) -> Activ
             )
             
     except N8NClientError as e:
-        logger.error("activation_error", workflow_id=workflow_id, error=str(e))
+        logger.error(
+            "activation_error",
+            workflow_id=workflow_id,
+            error=str(e),
+            status_code=e.status_code,
+            response_body=e.response_body,
+        )
+        error_detail = f"Failed to {'activate' if request.active else 'deactivate'} workflow: {str(e)}"
+        if e.response_body:
+            raise HTTPException(
+                status_code=e.status_code or 500,
+                detail={
+                    "message": error_detail,
+                    "n8n_error": e.response_body,
+                },
+            )
         raise HTTPException(
             status_code=e.status_code or 500,
-            detail=f"Failed to {'activate' if request.active else 'deactivate'} workflow: {str(e)}"
+            detail=error_detail,
         )
     except Exception as e:
         logger.error("activation_error", workflow_id=workflow_id, error=str(e))

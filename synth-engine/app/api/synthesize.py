@@ -211,6 +211,7 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
             # Auto-push to n8n and activate for immediate testing
             validation_errors = []
             auto_fixed = False
+            push_error: Optional[str] = None
             if result.n8n_json:
                 try:
                     from app.n8n.client import N8NClient
@@ -236,6 +237,9 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                     n8n_workflow_id = push_result.get("id")
                     
                     if n8n_workflow_id:
+                        # Verify workflow exists before returning ID/URL
+                        await client.get_workflow(n8n_workflow_id)
+
                         # Activate the workflow for immediate use
                         try:
                             await client.activate_workflow(n8n_workflow_id)
@@ -253,8 +257,19 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                             n8n_workflow_id=n8n_workflow_id,
                             webhook_url=webhook_url,
                         )
+                except N8NClientError as e:
+                    logger.warning(
+                        "n8n_push_failed",
+                        error=str(e),
+                        status_code=e.status_code,
+                        response_body=e.response_body,
+                    )
+                    push_error = f"Failed to push to n8n: {str(e)}"
+                    if e.response_body:
+                        push_error = f"{push_error} ({e.response_body})"
                 except Exception as e:
                     logger.warning("n8n_push_failed", error=str(e))
+                    push_error = f"Failed to push to n8n: {str(e)}"
             
             return SynthesizeResponse(
                 workflow_id=result.workflow_id,
@@ -272,7 +287,8 @@ async def synthesize_workflow(request: SynthesizeRequest) -> SynthesizeResponse:
                 n8n_workflow_url=n8n_workflow_url,
                 validation_errors=validation_errors or None,
                 auto_fixed=auto_fixed,
-                success=False if validation_errors else True,
+                success=False if validation_errors or push_error else True,
+                stop_reason=push_error,
             )
         
     except Exception as e:

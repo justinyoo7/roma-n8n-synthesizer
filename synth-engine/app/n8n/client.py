@@ -76,7 +76,13 @@ class N8NClient:
                 )
                 
                 if response.status_code >= 400:
-                    error_body = response.json() if response.content else {}
+                    if response.content:
+                        try:
+                            error_body = response.json()
+                        except ValueError:
+                            error_body = {"raw": response.text}
+                    else:
+                        error_body = {}
                     raise N8NClientError(
                         f"n8n API error: {response.status_code}",
                         status_code=response.status_code,
