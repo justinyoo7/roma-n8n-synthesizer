@@ -253,7 +253,31 @@ class N8NCompiler:
             # No Operation - pass through
             params = {}
         
-        return params
+        return self._sanitize_parameters(params)
+
+    def _sanitize_parameters(self, params: Any) -> Any:
+        """Normalize common param mistakes from LLM outputs.
+
+        n8n does not recognize a top-level 'option' key (expects 'options').
+        If we see 'option' and no 'options', rename it. Also sanitize nested
+        structures to prevent n8n editor load errors.
+        """
+        if isinstance(params, list):
+            return [self._sanitize_parameters(item) for item in params]
+        if not isinstance(params, dict):
+            return params
+
+        has_options = "options" in params
+        sanitized: dict = {}
+        for key, value in params.items():
+            normalized_key = key
+            if key == "option" and not has_options:
+                normalized_key = "options"
+            if key == "option" and has_options:
+                continue
+            sanitized[normalized_key] = self._sanitize_parameters(value)
+
+        return sanitized
     
     def _fix_set_node_params(self, params: dict) -> dict:
         """Fix Set node parameters to use the correct n8n v1 format.
